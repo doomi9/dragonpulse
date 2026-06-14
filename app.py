@@ -22,7 +22,7 @@ import streamlit as st  # noqa: E402
 from dragonpulse import __version__  # noqa: E402
 from dragonpulse.config.logging_config import configure_logging  # noqa: E402
 from dragonpulse.config.settings import get_settings  # noqa: E402
-from dragonpulse.ui import detail_view, placeholders, pricing_view, search_view  # noqa: E402
+from dragonpulse.ui import detail_view, placeholders, pricing_view, search_view, theme  # noqa: E402
 from dragonpulse.ui.sidebar import render_sidebar  # noqa: E402
 
 
@@ -31,19 +31,16 @@ def main() -> None:
     configure_logging(settings.log_level.value)
 
     st.set_page_config(
-        page_title="DragonPulse",
-        page_icon="🐉",
+        page_title="DragonPulse · Dragon Infrastructure",
+        page_icon=theme.page_icon(),
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    theme.apply_theme()
 
     filters = render_sidebar()
 
-    st.title("🐉 DragonPulse")
-    st.caption(
-        f"v{__version__} · Local-first SAM.gov opportunity intelligence · "
-        "official APIs only · cache-first"
-    )
+    theme.render_hero_header(__version__)
 
     if not settings.has_api_key:
         st.warning(

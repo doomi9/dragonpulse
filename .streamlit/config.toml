@@ -7,6 +7,11 @@ gatherUsageStats = false
 [server]
 headless = true
 
+# HeroUI-inspired dark theme tuned to the blue/black Dragon Infrastructure logo.
 [theme]
-base = "light"
-primaryColor = "#b22222"
+base = "dark"
+primaryColor = "#2f7be6"
+backgroundColor = "#0a0d14"
+secondaryBackgroundColor = "#111620"
+textColor = "#e6edf3"
+font = "sans serif"

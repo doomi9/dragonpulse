@@ -10,6 +10,7 @@ from dragonpulse.cache.disk_cache import DiskCache
 from dragonpulse.config.settings import get_settings
 from dragonpulse.models.common import SET_ASIDE_CHOICES, NoticeType
 from dragonpulse.models.filters import OpportunityFilters
+from dragonpulse.ui import theme
 
 # Common NAICS codes shown in the multiselect. The firm's primary codes are
 # listed first; additional codes can be configured via DRAGONPULSE_DEFAULT_NAICS
@@ -35,7 +36,7 @@ def render_sidebar() -> OpportunityFilters:
     """Render the sidebar and return the assembled :class:`OpportunityFilters`."""
     settings = get_settings()
 
-    st.sidebar.title("🐉 DragonPulse")
+    theme.render_sidebar_logo()
     st.sidebar.caption("Local-first SAM.gov opportunity intelligence")
 
     _render_status(settings)
