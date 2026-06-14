@@ -10,6 +10,7 @@ from __future__ import annotations
 import streamlit as st
 
 from dragonpulse.config.logging_config import get_logger
+from dragonpulse.processors.embeddings import describe_backend, get_embedding_backend
 from dragonpulse.processors.text_extract import (
     UnsupportedDocument,
     extract_text_from_bytes,
@@ -33,6 +34,8 @@ def render_knowledge() -> None:
         "outreach, and (next) proposal drafts. Everything stays on this machine."
     )
 
+    _render_backend_status(kb)
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Documents", stats.documents)
     c2.metric("Chunks", stats.chunks)
@@ -44,6 +47,54 @@ def render_knowledge() -> None:
     _render_search(kb)
     st.divider()
     _render_library(kb)
+
+
+def _render_backend_status(kb) -> None:
+    """Show the active embedding method and offer to switch/re-index."""
+    status = describe_backend(kb.backend, kb.settings)
+
+    if status.is_semantic:
+        st.success(f"🧠 {status.headline}. {status.detail}")
+    elif status.fell_back:
+        st.warning(f"⚠️ {status.headline}. {status.detail}")
+    else:
+        st.info(f"🔤 {status.headline}. {status.detail}")
+
+    with st.expander("How to enable better semantic search (Ollama)", expanded=False):
+        st.markdown(
+            "Semantic embeddings rank passages by **meaning**, not just keywords — "
+            "much better at matching solicitation language to your past work.\n\n"
+            "**One-time setup (fully local, no API keys):**\n"
+            "1. Install [Ollama](https://ollama.com).\n"
+            "2. Pull the embedding model:\n"
+            "   ```bash\n"
+            "   ollama pull nomic-embed-text\n"
+            "   ```\n"
+            "3. In your `.env`, point DragonPulse at the local server:\n"
+            "   ```dotenv\n"
+            "   DRAGONPULSE_LLM_BASE_URL=http://localhost:11434/v1\n"
+            "   ```\n"
+            "   (You do **not** need to enable the chat LLM — embeddings work on "
+            "their own.)\n"
+            "4. Restart the app, or click **Re-index** below.\n\n"
+            "When the embedding method changes, your already-uploaded documents are "
+            "**automatically re-indexed** from their stored text — no re-uploading."
+        )
+
+    if kb.stats().chunks > 0:
+        cols = st.columns([1, 3])
+        if cols[0].button("🔄 Re-index", width="stretch",
+                          help="Detect the best available backend and rebuild embeddings."):
+            new_backend = get_embedding_backend(kb.settings)
+            with st.spinner("Re-embedding your documents locally…"):
+                sig = kb.reindex(new_backend)
+            new_status = describe_backend(kb.backend, kb.settings)
+            if new_status.is_semantic:
+                st.success(f"Re-indexed {kb.stats().chunks} chunks → {sig} (semantic).")
+            else:
+                st.info(f"Re-indexed {kb.stats().chunks} chunks → {sig} (lexical).")
+            st.session_state.pop(state.KEY_KB_HITS, None)
+            st.rerun()
 
 
 def _render_uploader(kb) -> None:

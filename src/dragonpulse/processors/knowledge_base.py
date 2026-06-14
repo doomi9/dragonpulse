@@ -137,6 +137,36 @@ class KnowledgeBase:
             self._vectors = self.backend.embed([c.text for c in self._chunks])
         self._save()
 
+    def reindex(self, backend: Optional[EmbeddingBackend] = None) -> str:
+        """Re-embed every stored chunk, optionally switching the embedding backend.
+
+        This is how DragonPulse upgrades an existing library from lexical to
+        semantic embeddings (or vice-versa) without re-uploading documents: the
+        original chunk *text* is retained, so only the vectors are rebuilt.
+
+        Parameters
+        ----------
+        backend:
+            New backend to adopt. If ``None``, the current backend is re-run
+            (useful to refresh after a previously-unavailable server comes up).
+
+        Returns
+        -------
+        str
+            The signature of the backend now in use (e.g. ``"ollama:nomic-embed-text"``).
+        """
+        with self._lock:
+            if backend is not None:
+                self.backend = backend
+            self._reindex_from_chunks()
+        logger.info(
+            "Reindexed %d chunks across %d documents using %s.",
+            len(self._chunks),
+            len(self._documents),
+            self.backend.signature(),
+        )
+        return self.backend.signature()
+
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #

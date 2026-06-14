@@ -39,9 +39,9 @@ locally on your machine.
   distribution, and lists comparable awards (awardee + amount) with CSV export.
 - **RAG knowledge base** (local): upload past proposals/performance (PDF, DOCX,
   TXT, MD), index them into an **on‑disk vector store**, and run grounded
-  semantic search where every hit **cites its source document + chunk**. Works
-  offline with a pure‑NumPy hashing embedding; optionally upgrades to local
-  Ollama embeddings or `sentence-transformers`.
+  search where every hit **cites its source document + chunk**. Works offline
+  with a pure‑NumPy hashing embedding; **auto‑upgrades to semantic embeddings
+  via local Ollama** when configured (see below).
 
 > 🚧 **Not yet built (next phase, awaiting your go‑ahead):** the proposal
 > generator. Its building blocks (attachment extraction, grounded LLM wrapper,
@@ -221,6 +221,41 @@ Prefer a cloud provider instead? Leave `DRAGONPULSE_LLM_BASE_URL` blank and set
 Every LLM prompt is constrained to provided context and instructed to **cite
 its sources**; if the LLM is unavailable or errors, DragonPulse silently falls
 back to the grounded template so the UI never breaks.
+
+---
+
+## 📚 Knowledge base embeddings (lexical vs. semantic)
+
+The RAG knowledge base works out of the box with a **pure‑NumPy lexical
+(keyword) embedding** — fully offline, no downloads, no API keys. For much
+better retrieval quality, upgrade to **semantic embeddings via local Ollama**:
+
+```bash
+# One-time: pull the local embedding model
+ollama pull nomic-embed-text
+```
+
+```dotenv
+# In .env — embeddings only need the base URL (you do NOT have to enable the chat LLM)
+DRAGONPULSE_LLM_BASE_URL=http://localhost:11434/v1
+# Optional overrides (these are the defaults):
+DRAGONPULSE_RAG_EMBEDDING_BACKEND=auto          # auto -> Ollama if base URL set, else lexical
+DRAGONPULSE_RAG_EMBEDDING_MODEL=nomic-embed-text
+```
+
+How the switch works:
+
+- **Automatic detection:** with `auto` (the default), DragonPulse uses Ollama
+  `nomic-embed-text` whenever `DRAGONPULSE_LLM_BASE_URL` is set and reachable,
+  and otherwise falls back to the lexical method.
+- **Graceful fallback:** if Ollama is down or the model isn't pulled, it quietly
+  uses lexical search and the Knowledge Base tab shows a warning telling you why.
+- **Automatic re‑indexing:** when the embedding method changes, your already‑
+  uploaded documents are re‑embedded **from their stored text** — no re‑uploading.
+  On a running app you can also click **🔄 Re‑index** in the Knowledge Base tab.
+- **Active method is always visible:** the Knowledge Base tab shows
+  "Using semantic embeddings via Ollama" or "Using lexical (keyword) search".
+- **Fully local:** no external API keys are ever required for embeddings.
 
 ---
 

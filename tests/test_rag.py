@@ -6,13 +6,33 @@ import numpy as np
 import pytest
 
 from dragonpulse.config.settings import KeyTier, Settings
-from dragonpulse.processors.embeddings import HashingEmbedding, get_embedding_backend
+from dragonpulse.processors.embeddings import (
+    HashingEmbedding,
+    describe_backend,
+    get_embedding_backend,
+)
 from dragonpulse.processors.knowledge_base import KnowledgeBase
 from dragonpulse.processors.text_extract import (
     UnsupportedDocument,
     chunk_text,
     extract_text_from_bytes,
 )
+
+
+class _FakeOllamaBackend:
+    """Minimal stand-in for OllamaEmbedding (no network) for unit tests."""
+
+    def __init__(self, dimension: int = 64, model: str = "nomic-embed-text") -> None:
+        self.name = "ollama"
+        self.model = model
+        self.dimension = dimension
+        self._inner = HashingEmbedding(dimension=dimension)
+
+    def embed(self, texts):
+        return self._inner.embed(texts)
+
+    def signature(self) -> str:
+        return f"ollama:{self.model}"
 
 
 # --------------------------------------------------------------------------- #
@@ -171,3 +191,90 @@ def test_get_embedding_backend_defaults_to_hashing(tmp_path):
     settings = Settings(data_dir=tmp_path, rag_embedding_backend="hashing")
     backend = get_embedding_backend(settings)
     assert backend.name == "hashing"
+
+
+# --------------------------------------------------------------------------- #
+# Semantic upgrade: reindex() and backend status
+# --------------------------------------------------------------------------- #
+def test_reindex_switches_backend_and_preserves_docs(tmp_path):
+    kb = _kb(tmp_path)
+    kb.add_document(
+        "Power.txt",
+        "high voltage power transmission lines and substations for the army " * 6,
+    )
+    kb.add_document(
+        "Software.txt", "custom python web application and rest apis " * 6
+    )
+    assert kb.stats().documents == 2
+    assert kb.backend.name == "hashing"
+
+    # Simulate switching to semantic (Ollama-like) embeddings in-session.
+    sig = kb.reindex(_FakeOllamaBackend(dimension=64))
+    assert sig == "ollama:nomic-embed-text"
+    assert kb.backend.name == "ollama"
+    assert kb.stats().dimension == 64
+    assert kb._vectors.shape == (kb.stats().chunks, 64)
+
+    # Documents/chunks are preserved and search still finds the right doc.
+    assert kb.stats().documents == 2
+    hits = kb.search("power line construction for the army", k=1)
+    assert hits and "Power.txt" in hits[0].citation
+
+
+def test_reindex_persists_new_backend(tmp_path):
+    kb = _kb(tmp_path)
+    kb.add_document("Doc.txt", "grid modernization and substation upgrades " * 8)
+    kb.reindex(_FakeOllamaBackend(dimension=64))
+
+    # Reopen with the same (ollama-like) backend -> signature matches, vectors load.
+    kb2 = KnowledgeBase(
+        settings=kb.settings, backend=_FakeOllamaBackend(dimension=64)
+    )
+    assert kb2.stats().documents == 1
+    assert kb2.stats().dimension == 64
+    assert kb2.search("substation upgrades", k=1)
+
+
+def test_describe_backend_semantic_ollama(tmp_path):
+    settings = Settings(data_dir=tmp_path, rag_embedding_backend="auto")
+    status = describe_backend(_FakeOllamaBackend(), settings)
+    assert status.is_semantic is True
+    assert status.fell_back is False
+    assert "Ollama" in status.headline
+
+
+def test_describe_backend_lexical_default(tmp_path):
+    # No base URL, lexical chosen on purpose -> plain info, not a fallback.
+    settings = Settings(data_dir=tmp_path, rag_embedding_backend="hashing")
+    status = describe_backend(HashingEmbedding(64), settings)
+    assert status.is_semantic is False
+    assert status.fell_back is False
+    assert "lexical" in status.headline.lower()
+
+
+def test_describe_backend_flags_fallback(tmp_path):
+    # Wanted Ollama (auto + base URL) but ended up on hashing -> fell_back warning.
+    settings = Settings(
+        data_dir=tmp_path,
+        rag_embedding_backend="auto",
+        llm_base_url="http://localhost:11434/v1",
+    )
+    status = describe_backend(HashingEmbedding(64), settings)
+    assert status.is_semantic is False
+    assert status.fell_back is True
+
+
+def test_auto_backend_prefers_ollama_when_base_url_set(tmp_path, monkeypatch):
+    """With auto + a base URL, the factory attempts Ollama (then falls back)."""
+    settings = Settings(
+        data_dir=tmp_path,
+        rag_embedding_backend="auto",
+        llm_base_url="http://localhost:11434/v1",
+    )
+
+    # Force the Ollama probe to succeed by stubbing the class.
+    import dragonpulse.processors.embeddings as emb
+
+    monkeypatch.setattr(emb, "OllamaEmbedding", lambda base_url, model: _FakeOllamaBackend())
+    backend = get_embedding_backend(settings)
+    assert backend.name == "ollama"

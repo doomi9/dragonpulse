@@ -13,7 +13,11 @@ from dragonpulse.processors.attachments import (
     extract_text,
 )
 from dragonpulse.processors.checklist import ChecklistItem, build_checklist
-from dragonpulse.processors.embeddings import get_embedding_backend
+from dragonpulse.processors.embeddings import (
+    BackendStatus,
+    describe_backend,
+    get_embedding_backend,
+)
 from dragonpulse.processors.knowledge_base import KnowledgeBase
 from dragonpulse.processors.llm import LLMClient, LLMResult, LLMUnavailable
 from dragonpulse.processors.outreach import OutreachDraft, generate_outreach_email
@@ -40,6 +44,8 @@ __all__ = [
     "analyze_awards",
     "KnowledgeBase",
     "get_embedding_backend",
+    "describe_backend",
+    "BackendStatus",
     "UnsupportedDocument",
     "chunk_text",
     "extract_and_chunk",

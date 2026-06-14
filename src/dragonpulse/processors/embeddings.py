@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+from dataclasses import dataclass
 from typing import List, Optional, Protocol
 
 import numpy as np
@@ -214,3 +215,77 @@ def get_embedding_backend(settings: Optional[Settings] = None) -> EmbeddingBacke
             return HashingEmbedding()
 
     return HashingEmbedding()
+
+
+@dataclass
+class BackendStatus:
+    """User-facing description of the active embedding backend."""
+
+    name: str            # "ollama" | "sentence_transformers" | "hashing"
+    is_semantic: bool
+    headline: str        # short banner text
+    detail: str          # supporting explanation
+    fell_back: bool      # True if a semantic backend was wanted but unavailable
+
+
+def describe_backend(
+    backend: "EmbeddingBackend", settings: Optional[Settings] = None
+) -> BackendStatus:
+    """Return a friendly status for the *actually active* embedding backend.
+
+    Distinguishes three cases for the UI:
+    - semantic via Ollama / sentence-transformers (good),
+    - lexical hashing because nothing semantic was configured (info), and
+    - lexical hashing even though Ollama *was* configured (warn: it fell back,
+      usually because the server is down or the model isn't pulled yet).
+    """
+    settings = settings or get_settings()
+    name = getattr(backend, "name", "hashing")
+
+    if name == "ollama":
+        model = getattr(backend, "model", settings.rag_embedding_model)
+        return BackendStatus(
+            name=name,
+            is_semantic=True,
+            headline=f"Using semantic embeddings via Ollama ({model})",
+            detail="Retrieval ranks passages by meaning, not just keywords.",
+            fell_back=False,
+        )
+
+    if name == "sentence_transformers":
+        model = getattr(backend, "model_name", settings.rag_embedding_model)
+        return BackendStatus(
+            name=name,
+            is_semantic=True,
+            headline=f"Using semantic embeddings (sentence-transformers: {model})",
+            detail="Retrieval ranks passages by meaning, not just keywords.",
+            fell_back=False,
+        )
+
+    # Hashing (lexical). Did the user intend semantic but it fell back?
+    wanted_semantic = settings.rag_embedding_backend in ("ollama", "sentence_transformers") or (
+        settings.rag_embedding_backend == "auto" and bool(settings.llm_base_url)
+    )
+    if wanted_semantic:
+        return BackendStatus(
+            name=name,
+            is_semantic=False,
+            headline="Using lexical (keyword) search — semantic backend unavailable",
+            detail=(
+                "Ollama was configured but could not be reached or the model isn't "
+                f"pulled. Run `ollama pull {settings.rag_embedding_model}` and ensure "
+                "Ollama is running, then re-index."
+            ),
+            fell_back=True,
+        )
+    return BackendStatus(
+        name=name,
+        is_semantic=False,
+        headline="Using lexical (keyword) search",
+        detail=(
+            "Fully offline, no model download. For higher-quality semantic "
+            f"retrieval, run `ollama pull {settings.rag_embedding_model}` and set "
+            "DRAGONPULSE_LLM_BASE_URL=http://localhost:11434/v1, then re-index."
+        ),
+        fell_back=False,
+    )
