@@ -1,0 +1,12 @@
+# Streamlit configuration for DragonPulse.
+# Local-first: usage stats are disabled.
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+
+[theme]
+base = "light"
+primaryColor = "#b22222"

@@ -1,0 +1,22 @@
+# DragonPulse runtime dependencies
+# Pinned to known-good, widely-available versions (Python 3.9+ compatible).
+
+# --- Core / data ---
+pydantic>=2.6,<3.0
+pydantic-settings>=2.2,<3.0
+python-dotenv>=1.0,<2.0
+pandas>=2.0,<3.0
+
+# --- HTTP ---
+requests>=2.31,<3.0
+
+# --- UI ---
+# >=1.43 for the modern width="stretch" element API used in the views.
+streamlit>=1.43,<2.0
+
+# --- Attachment text extraction ---
+pdfplumber>=0.11,<1.0
+
+# --- Optional LLM (opt-in only; app degrades gracefully without it) ---
+# The OpenAI SDK also speaks to local OpenAI-compatible servers (Ollama, LM Studio, vLLM).
+openai>=1.30,<2.0
