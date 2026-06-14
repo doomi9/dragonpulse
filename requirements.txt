@@ -6,6 +6,7 @@ pydantic>=2.6,<3.0
 pydantic-settings>=2.2,<3.0
 python-dotenv>=1.0,<2.0
 pandas>=2.0,<3.0
+numpy>=1.24,<3.0  # local RAG vector store math (cosine similarity)
 
 # --- HTTP ---
 requests>=2.31,<3.0
@@ -14,9 +15,16 @@ requests>=2.31,<3.0
 # >=1.43 for the modern width="stretch" element API used in the views.
 streamlit>=1.43,<2.0
 
-# --- Attachment text extraction ---
+# --- Document text extraction (attachments + RAG knowledge base) ---
 pdfplumber>=0.11,<1.0
+python-docx>=1.1,<2.0  # DOCX proposals/performance docs
 
 # --- Optional LLM (opt-in only; app degrades gracefully without it) ---
 # The OpenAI SDK also speaks to local OpenAI-compatible servers (Ollama, LM Studio, vLLM).
 openai>=1.30,<2.0
+
+# --- Optional, higher-quality RAG embeddings (NOT installed by default) ---
+# The knowledge base works offline with a pure-NumPy hashing embedding. For
+# semantic embeddings, either point DRAGONPULSE_LLM_BASE_URL at a local Ollama
+# server (recommended) or install sentence-transformers manually:
+#   pip install sentence-transformers

@@ -22,7 +22,14 @@ import streamlit as st  # noqa: E402
 from dragonpulse import __version__  # noqa: E402
 from dragonpulse.config.logging_config import configure_logging  # noqa: E402
 from dragonpulse.config.settings import get_settings  # noqa: E402
-from dragonpulse.ui import detail_view, placeholders, pricing_view, search_view, theme  # noqa: E402
+from dragonpulse.ui import (  # noqa: E402
+    detail_view,
+    knowledge_view,
+    placeholders,
+    pricing_view,
+    search_view,
+    theme,
+)
 from dragonpulse.ui.sidebar import render_sidebar  # noqa: E402
 
 
@@ -61,7 +68,7 @@ def main() -> None:
     with tab_pricing:
         pricing_view.render_pricing(filters)
     with tab_rag:
-        placeholders.render_rag()
+        knowledge_view.render_knowledge()
     with tab_proposal:
         placeholders.render_proposal()
 

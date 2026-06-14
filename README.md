@@ -37,10 +37,15 @@ locally on your machine.
 - **Pricing intelligence** (live): pulls historical **Award Notices** for your
   sidebar filters, computes count/min/median/mean/max, charts the award‑amount
   distribution, and lists comparable awards (awardee + amount) with CSV export.
+- **RAG knowledge base** (local): upload past proposals/performance (PDF, DOCX,
+  TXT, MD), index them into an **on‑disk vector store**, and run grounded
+  semantic search where every hit **cites its source document + chunk**. Works
+  offline with a pure‑NumPy hashing embedding; optionally upgrades to local
+  Ollama embeddings or `sentence-transformers`.
 
-> 🚧 **Not yet built (next phases, awaiting your go‑ahead):** the full RAG
-> pipeline and the proposal generator. The building blocks (attachment
-> extraction, grounded LLM wrapper) are already in place.
+> 🚧 **Not yet built (next phase, awaiting your go‑ahead):** the proposal
+> generator. Its building blocks (attachment extraction, grounded LLM wrapper,
+> the RAG knowledge base) are already in place.
 
 ---
 
@@ -119,8 +124,10 @@ dragonpulse/
 │   ├── cache/                     # disk_cache.py, request_budget.py
 │   ├── models/                    # opportunity, award, common, filters
 │   ├── api/                       # base, opportunities (v2), awards
-│   ├── processors/                # checklist, outreach, attachments, llm
-│   └── ui/                        # sidebar, search_view, detail_view, ...
+│   ├── processors/                # checklist, outreach, attachments, llm,
+│   │                              #   pricing, embeddings, text_extract,
+│   │                              #   knowledge_base (RAG)
+│   └── ui/                        # sidebar, search/detail/pricing/knowledge views
 └── tests/                         # pytest: cache, models, checklist, api
 ```
 
@@ -257,6 +264,11 @@ query‑param translation, checklist grounding, and the cache‑first API client
 | `DRAGONPULSE_LLM_BASE_URL` | – | OpenAI‑compatible base URL (local OK) |
 | `DRAGONPULSE_LLM_API_KEY` | – | LLM credential |
 | `DRAGONPULSE_LLM_MODEL` | `gpt-4o-mini` | Model name |
+| `DRAGONPULSE_RAG_EMBEDDING_BACKEND` | `auto` | `auto`/`hashing`/`ollama`/`sentence_transformers` |
+| `DRAGONPULSE_RAG_EMBEDDING_MODEL` | `nomic-embed-text` | Model for ollama/ST backends |
+| `DRAGONPULSE_RAG_CHUNK_CHARS` | `1200` | Target characters per chunk |
+| `DRAGONPULSE_RAG_CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `DRAGONPULSE_RAG_TOP_K` | `5` | Default retrieved chunks |
 
 ---
 
@@ -264,11 +276,11 @@ query‑param translation, checklist grounding, and the cache‑first API client
 
 1. ✅ **Pricing intelligence** — award‑amount distributions for comparable
    NAICS/keywords + comparable awards (awardee + amount). **Done.**
-2. **RAG knowledge base** — local chunking + embeddings + on‑disk vector store
-   for past proposals/performance, with cited retrieval.
+2. ✅ **RAG knowledge base** — local chunking + embeddings + on‑disk vector store
+   for past proposals/performance, with cited retrieval. **Done.**
 3. **Proposal generator** — grounded section drafts from the solicitation
    (Sections L/M, SOW) + your knowledge base, with a compliance matrix.
 
-> Per the project plan, the remaining phases are **paused pending your
+> Per the project plan, the proposal generator is **paused pending your
 > feedback**.
 ```

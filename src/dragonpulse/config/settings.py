@@ -17,7 +17,7 @@ from __future__ import annotations
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -25,6 +25,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # Repo root: .../dragonpulse  (this file is src/dragonpulse/config/settings.py)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
+
+# Allowed values for the RAG embedding backend selector.
+EmbeddingBackend = Literal["auto", "hashing", "ollama", "sentence_transformers"]
 
 
 class KeyTier(str, Enum):
@@ -102,6 +105,23 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="gpt-4o-mini")
     llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
 
+    # --- RAG knowledge base -------------------------------------------------
+    rag_embedding_backend: EmbeddingBackend = Field(
+        default="auto",
+        description="Embedding backend: auto | hashing | ollama | sentence_transformers.",
+    )
+    rag_embedding_model: str = Field(
+        default="nomic-embed-text",
+        description="Model name for the ollama/sentence_transformers backends.",
+    )
+    rag_chunk_chars: int = Field(
+        default=1200, ge=200, le=8000, description="Target characters per chunk."
+    )
+    rag_chunk_overlap: int = Field(
+        default=200, ge=0, le=2000, description="Character overlap between chunks."
+    )
+    rag_top_k: int = Field(default=5, ge=1, le=50, description="Default retrieved chunks.")
+
     # ----------------------------------------------------------------------- #
     # Validators
     # ----------------------------------------------------------------------- #
@@ -143,6 +163,10 @@ class Settings(BaseSettings):
         return self.data_dir / "attachments"
 
     @property
+    def rag_dir(self) -> Path:
+        return self.data_dir / "rag"
+
+    @property
     def llm_active(self) -> bool:
         """LLM is used when enabled AND reachable.
 
@@ -167,7 +191,7 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         """Create local data directories if they do not yet exist."""
-        for path in (self.data_dir, self.cache_dir, self.attachments_dir):
+        for path in (self.data_dir, self.cache_dir, self.attachments_dir, self.rag_dir):
             path.mkdir(parents=True, exist_ok=True)
 
     def masked_api_key(self) -> str:

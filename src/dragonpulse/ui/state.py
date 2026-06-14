@@ -15,6 +15,7 @@ from dragonpulse.api.awards import AwardsClient
 from dragonpulse.api.opportunities import OpportunitiesClient
 from dragonpulse.config.settings import Settings, get_settings
 from dragonpulse.models.opportunity import Opportunity, OpportunitySearchResult
+from dragonpulse.processors.knowledge_base import KnowledgeBase
 
 # Session-state keys (centralized to avoid typos).
 KEY_RESULT = "search_result"
@@ -22,6 +23,7 @@ KEY_SELECTED = "selected_notice_id"
 KEY_PROFILE = "company_profile"
 KEY_LAST_ERROR = "last_error"
 KEY_PRICING = "pricing_analysis"
+KEY_KB_HITS = "kb_search_hits"
 
 
 @st.cache_resource(show_spinner=False)
@@ -34,6 +36,12 @@ def get_opportunities_client() -> OpportunitiesClient:
 def get_awards_client() -> AwardsClient:
     """Return a process-wide AwardsClient (cached across reruns)."""
     return AwardsClient()
+
+
+@st.cache_resource(show_spinner=False)
+def get_knowledge_base() -> KnowledgeBase:
+    """Return a process-wide KnowledgeBase (cached across reruns)."""
+    return KnowledgeBase()
 
 
 def settings() -> Settings:
