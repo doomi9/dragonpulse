@@ -22,6 +22,12 @@ from dragonpulse.processors.knowledge_base import KnowledgeBase
 from dragonpulse.processors.llm import LLMClient, LLMResult, LLMUnavailable
 from dragonpulse.processors.outreach import OutreachDraft, generate_outreach_email
 from dragonpulse.processors.pricing import PricingAnalysis, analyze_awards
+from dragonpulse.processors.proposal import (
+    SECTION_SPECS,
+    ProposalGenerator,
+    SectionSpec,
+    draft_to_docx_bytes,
+)
 from dragonpulse.processors.text_extract import (
     UnsupportedDocument,
     chunk_text,
@@ -50,4 +56,8 @@ __all__ = [
     "chunk_text",
     "extract_and_chunk",
     "extract_text_from_bytes",
+    "ProposalGenerator",
+    "SectionSpec",
+    "SECTION_SPECS",
+    "draft_to_docx_bytes",
 ]

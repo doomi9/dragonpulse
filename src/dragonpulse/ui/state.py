@@ -24,6 +24,9 @@ KEY_PROFILE = "company_profile"
 KEY_LAST_ERROR = "last_error"
 KEY_PRICING = "pricing_analysis"
 KEY_KB_HITS = "kb_search_hits"
+KEY_PROPOSAL_GEN = "proposal_generator"
+KEY_PROPOSAL_DRAFT = "proposal_draft"
+KEY_PROPOSAL_ATTACH = "proposal_attachments_loaded"
 
 
 @st.cache_resource(show_spinner=False)

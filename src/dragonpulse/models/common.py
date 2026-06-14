@@ -8,9 +8,9 @@ types). Parsing therefore favors ``Optional`` fields and ``extra="ignore"``.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class NoticeType(str, Enum):
@@ -93,6 +93,14 @@ class Address(_Tolerant):
     zipcode: Optional[str] = Field(default=None, alias="zip")
     country_code: Optional[str] = Field(default=None, alias="countryCode")
     street_address: Optional[str] = Field(default=None, alias="streetAddress")
+
+    @field_validator("city", "state", "country_code", mode="before")
+    @classmethod
+    def _flatten_coded(cls, value: Any) -> Optional[str]:
+        """SAM returns city/state as either a string or a ``{code, name}`` object."""
+        if isinstance(value, dict):
+            return value.get("name") or value.get("code")
+        return value
 
     def one_line(self) -> str:
         parts = [self.street_address, self.city, self.state, self.zipcode, self.country_code]

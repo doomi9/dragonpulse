@@ -259,6 +259,54 @@ How the switch works:
 
 ---
 
+## 📝 Proposal Generator
+
+The **Proposal Generator** tab turns a solicitation + your Knowledge Base into a
+grounded, source‑cited proposal draft. Every sentence can be traced back to
+either the solicitation or one of your own documents — nothing is invented.
+
+**How it works (per section):**
+
+1. The opportunity's attachments (SOW / solicitation) are downloaded, text‑
+   extracted, chunked, and embedded into an *ephemeral* in‑memory index using the
+   same embedding backend as the Knowledge Base.
+2. A section‑specific query retrieves the most relevant **solicitation** passages
+   **and** the most relevant **company** chunks from your RAG Knowledge Base.
+3. Both contexts (each labeled for citation) plus the opportunity metadata are
+   handed to your local LLM, which is instructed to use only that context and cite
+   it. With no LLM, you still get a **grounded evidence scaffold** (real excerpts,
+   nothing fabricated).
+
+**Sections generated:** Executive Summary · Technical Approach · Management &
+Staffing Plan · Relevant Past Performance · Differentiators · (optional)
+high‑level Pricing Strategy notes.
+
+**How to use it:**
+
+1. Run a search in **Discover** (or open one in **Detail**).
+2. Open the **Proposal Generator** tab and pick the opportunity.
+3. Click **📎 Load & extract attachments** (or paste the SOW text directly if the
+   attachments are scanned images).
+4. Click **⚙️ Generate Draft**. Each section appears in an expander with a
+   **📚 Sources / citations** popover showing the exact excerpts used.
+5. Refine any section with chat‑style feedback (e.g. *"focus on liquid cooling"*)
+   and click **🔁 Regenerate** — it re‑uses the solicitation + KB context.
+6. **Export** the whole draft to **Markdown** or **DOCX**.
+
+**For full AI prose**, enable a local model in `.env` (everything stays local):
+
+```bash
+ollama pull qwen2.5:14b          # high quality (or llama3.2:3b for speed)
+# in .env:
+DRAGONPULSE_LLM_ENABLED=true
+DRAGONPULSE_LLM_BASE_URL=http://localhost:11434/v1
+DRAGONPULSE_LLM_MODEL=qwen2.5:14b
+```
+
+Without an LLM the tab still works and produces a grounded, cited scaffold.
+
+---
+
 ## 🧪 Tests
 
 ```bash
@@ -313,9 +361,11 @@ query‑param translation, checklist grounding, and the cache‑first API client
    NAICS/keywords + comparable awards (awardee + amount). **Done.**
 2. ✅ **RAG knowledge base** — local chunking + embeddings + on‑disk vector store
    for past proposals/performance, with cited retrieval. **Done.**
-3. **Proposal generator** — grounded section drafts from the solicitation
-   (Sections L/M, SOW) + your knowledge base, with a compliance matrix.
+3. ✅ **Proposal generator** — grounded, source‑cited section drafts from the
+   solicitation (SOW) + your knowledge base, with per‑section regeneration and
+   Markdown/DOCX export. **Done.**
 
-> Per the project plan, the proposal generator is **paused pending your
-> feedback**.
-```
+### Possible future enhancements
+
+- Compliance matrix (Sections L/M → requirement → proposal section mapping).
+- Multi‑opportunity batch drafting and a saved‑draft library.

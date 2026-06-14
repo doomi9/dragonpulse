@@ -25,8 +25,8 @@ from dragonpulse.config.settings import get_settings  # noqa: E402
 from dragonpulse.ui import (  # noqa: E402
     detail_view,
     knowledge_view,
-    placeholders,
     pricing_view,
+    proposal_view,
     search_view,
     theme,
 )
@@ -70,7 +70,7 @@ def main() -> None:
     with tab_rag:
         knowledge_view.render_knowledge()
     with tab_proposal:
-        placeholders.render_proposal()
+        proposal_view.render_proposal()
 
 
 if __name__ == "__main__":
