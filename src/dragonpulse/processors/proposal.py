@@ -20,15 +20,26 @@ auditable and never asserts a capability that is not in the cited context.
 from __future__ import annotations
 
 import io
+import json
+import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from dragonpulse.config.logging_config import get_logger
 from dragonpulse.config.settings import Settings, get_settings
 from dragonpulse.models.opportunity import Opportunity
-from dragonpulse.models.proposal import CitationEvidence, ProposalDraft, ProposalSection
+from dragonpulse.models.proposal import (
+    STATUS_ADDRESSED,
+    STATUS_NOT_ADDRESSED,
+    STATUS_PARTIAL,
+    CitationEvidence,
+    ComplianceItem,
+    ComplianceMatrix,
+    ProposalDraft,
+    ProposalSection,
+)
 from dragonpulse.processors.embeddings import EmbeddingBackend, get_embedding_backend
 from dragonpulse.processors.knowledge_base import KnowledgeBase
 from dragonpulse.processors.llm import LLMClient, LLMUnavailable
@@ -38,6 +49,30 @@ logger = get_logger(__name__)
 
 _SNIPPET_CHARS = 320
 _MAX_SOLICITATION_CHARS = 60_000  # safety cap before chunking
+
+# Retrieval queries that surface the compliance-relevant parts of a solicitation.
+_COMPLIANCE_QUERIES = [
+    "Section L instructions to offerors proposal submission requirements format page limit",
+    "Section M evaluation criteria factors basis for award technical evaluation",
+    "the contractor shall perform mandatory tasks requirements deliverables",
+    "offeror must submit provide required documentation certifications registration",
+]
+_VALID_CATEGORIES = ("Section L", "Section M", "Evaluation", "SOW (shall)", "Other")
+# Sentence-level detector for mandatory/evaluation language (rules fallback).
+_REQUIREMENT_RE = re.compile(
+    r"[^.\n]*\b(shall|must|will be evaluated|is required to|are required to|"
+    r"offeror[s]? (?:shall|must|will)|the government will evaluate)\b[^.\n]*\.",
+    re.IGNORECASE,
+)
+# Status thresholds on cosine similarity between a requirement and its best
+# matching proposal section. Tuned for L2-normalized semantic embeddings; these
+# are intentionally conservative so the auto-status under-claims rather than
+# over-claims coverage. They are only a starting point the user edits in the UI.
+_ADDRESSED_THRESHOLD = 0.58
+_PARTIAL_THRESHOLD = 0.45
+# Below this best-KB-cosine, treat direct past-performance matches as "weak" and
+# steer the model toward an honest transferable-experience framing.
+_KB_WEAK_THRESHOLD = 0.45
 
 
 @dataclass
@@ -49,6 +84,9 @@ class SectionSpec:
     query: str          # retrieval query (semantic) for solicitation + KB
     instruction: str    # what to write
     optional: bool = False
+    sol_k: int = 4      # solicitation chunks to retrieve
+    kb_k: int = 4       # knowledge-base chunks to retrieve
+    honest_transferable: bool = False  # add transferable-experience honesty guidance
 
 
 # Order matters: this is the draft's section order.
@@ -90,14 +128,17 @@ SECTION_SPECS: List[SectionSpec] = [
     SectionSpec(
         section_id="past_performance",
         title="Relevant Past Performance",
-        query="past performance relevant experience similar projects prior contracts results",
+        query="past performance relevant experience similar projects prior contracts "
+        "customers scope outcomes results capabilities delivered",
         instruction=(
-            "Write a Relevant Past Performance section citing specific prior work "
-            "from the knowledge base that is similar in scope to this requirement. "
-            "Do NOT invent projects, customers, dollar values, or outcomes — use "
-            "only what the knowledge base context provides. If evidence is thin, "
-            "say so plainly."
+            "Write a Relevant Past Performance section that connects the company's "
+            "actual prior work (from the knowledge base) to THIS requirement. For "
+            "each example, briefly state what was done and why it is relevant to the "
+            "solicitation's scope. Do NOT invent projects, customers, dollar values, "
+            "or outcomes — use only what the knowledge base context provides."
         ),
+        kb_k=6,
+        honest_transferable=True,
     ),
     SectionSpec(
         section_id="differentiators",
@@ -128,6 +169,70 @@ def _snippet(text: str) -> str:
     return text[:_SNIPPET_CHARS] + ("…" if len(text) > _SNIPPET_CHARS else "")
 
 
+def _parse_json_object(text: str) -> Dict:
+    """Best-effort parse of an LLM JSON reply (handles stray prose/fences)."""
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _normalize_category(value: Optional[str]) -> str:
+    if not value:
+        return "Other"
+    v = str(value).strip()
+    for cat in _VALID_CATEGORIES:
+        if v.lower() == cat.lower():
+            return cat
+    return _categorize(v)
+
+
+def _categorize(text: str) -> str:
+    """Heuristic category from requirement text."""
+    low = text.lower()
+    if "section l" in low or "instructions to offeror" in low or "submission" in low:
+        return "Section L"
+    if "section m" in low or "basis for award" in low:
+        return "Section M"
+    if "evaluat" in low:
+        return "Evaluation"
+    if "shall" in low or "must" in low:
+        return "SOW (shall)"
+    return "Other"
+
+
+def _prioritize(items: List["ComplianceItem"]) -> List["ComplianceItem"]:
+    """Order rules-extracted items so evaluation/Section M surface first."""
+    order = {"Section M": 0, "Evaluation": 1, "Section L": 2, "SOW (shall)": 3, "Other": 4}
+    return sorted(items, key=lambda it: order.get(it.category, 9))
+
+
+def kb_evidence_is_weak(
+    evidence: List[CitationEvidence], threshold: float = _KB_WEAK_THRESHOLD
+) -> bool:
+    """True when the strongest knowledge-base match is below ``threshold``.
+
+    Used to decide whether the Past Performance section should pivot to an honest
+    "transferable experience" framing instead of claiming direct matches.
+    """
+    kb_scores = [
+        e.score for e in evidence if e.origin == "knowledge_base" and e.score is not None
+    ]
+    if not kb_scores:
+        return True
+    return max(kb_scores) < threshold
+
+
 class SolicitationIndex:
     """Ephemeral, in-memory semantic index over the solicitation attachments."""
 
@@ -135,6 +240,7 @@ class SolicitationIndex:
         self.backend = backend
         self.chunks: List[str] = []
         self.labels: List[str] = []
+        self.by_label: Dict[str, str] = {}
         self.vectors: np.ndarray = np.zeros((0, backend.dimension), dtype=np.float32)
 
     @property
@@ -157,6 +263,7 @@ class SolicitationIndex:
             return 0
         self.chunks = all_chunks
         self.labels = all_labels
+        self.by_label = dict(zip(all_labels, all_chunks))
         self.vectors = self.backend.embed(all_chunks)
         logger.info("Solicitation index built: %d chunks", len(all_chunks))
         return len(all_chunks)
@@ -228,9 +335,9 @@ class ProposalGenerator:
             ]
         )
 
-    def _gather_evidence(self, spec: SectionSpec, k: int = 4) -> List[CitationEvidence]:
-        sol = self.solicitation.search(spec.query, k=k)
-        kb_hits = self.kb.search(spec.query, k=k)
+    def _gather_evidence(self, spec: SectionSpec) -> List[CitationEvidence]:
+        sol = self.solicitation.search(spec.query, k=spec.sol_k)
+        kb_hits = self.kb.search(spec.query, k=spec.kb_k)
         kb_ev = [
             CitationEvidence(
                 label=f"KB: {h.citation}",
@@ -272,6 +379,16 @@ class ProposalGenerator:
         context = f"{self._opportunity_block()}\n\n{self._context_block(evidence)}"
 
         instruction = spec.instruction
+        if spec.honest_transferable and kb_evidence_is_weak(evidence):
+            instruction += (
+                "\n\nIMPORTANT — the knowledge base has LIMITED directly-matching "
+                "past performance for this requirement. Be honest about that: do not "
+                "overstate or fabricate direct experience. Instead, identify the most "
+                "RELEVANT and TRANSFERABLE capabilities/projects from the provided "
+                "context and explain specifically how that experience transfers to "
+                "this requirement. If coverage is genuinely thin, say so plainly and "
+                "frame it as transferable/adjacent experience rather than a direct match."
+            )
         if feedback:
             instruction += (
                 f"\n\nUSER FEEDBACK for this revision: {feedback}\n"
@@ -328,6 +445,13 @@ class ProposalGenerator:
         ]
         sol = [e for e in evidence if e.origin == "solicitation"]
         kb = [e for e in evidence if e.origin == "knowledge_base"]
+        if spec.honest_transferable and kb_evidence_is_weak(evidence):
+            lines.append(
+                "_Note: direct past-performance matches are limited. Frame the most "
+                "relevant items below as **transferable experience** and be honest "
+                "about coverage rather than claiming an exact match._"
+            )
+            lines.append("")
         if sol:
             lines.append("**Relevant solicitation requirements:**")
             lines += [f"- [{e.label}] {e.snippet}" for e in sol]
@@ -355,6 +479,190 @@ class ProposalGenerator:
             sections=sections,
             llm_model=self.settings.llm_model if self.llm.available else None,
         )
+
+    def strengthen_section_for_requirement(
+        self,
+        section: ProposalSection,
+        requirement: str,
+        *,
+        source_label: Optional[str] = None,
+    ) -> ProposalSection:
+        """Regenerate ``section`` so it better addresses a specific requirement.
+
+        Keeps the section's existing substance (passed as ``prior``) and adds
+        targeted feedback, so the rest of the draft is untouched.
+        """
+        spec = next((s for s in SECTION_SPECS if s.section_id == section.section_id), None)
+        if spec is None:
+            return section
+        src = f" (see {source_label})" if source_label else ""
+        feedback = (
+            "Strengthen this section so it explicitly and unmistakably addresses "
+            f'the following solicitation requirement{src}: "{requirement.strip()}". '
+            "A reviewer should be able to see exactly how the proposal satisfies it. "
+            "Preserve the section's existing strengths and stay grounded in the CONTEXT; "
+            "do not invent capabilities."
+        )
+        return self.generate_section(spec, feedback=feedback, prior=section)
+
+    # ------------------------------------------------------------------ #
+    # Compliance matrix
+    # ------------------------------------------------------------------ #
+    def _compliance_evidence(self, k_per_query: int = 4) -> List[CitationEvidence]:
+        """Dedup'd solicitation chunks most relevant to compliance (L/M/shall)."""
+        seen: Dict[str, CitationEvidence] = {}
+        for query in _COMPLIANCE_QUERIES:
+            for ev in self.solicitation.search(query, k=k_per_query):
+                if ev.label not in seen:
+                    seen[ev.label] = ev
+        return list(seen.values())
+
+    def extract_compliance_matrix(
+        self, draft: ProposalDraft, *, max_items: int = 15
+    ) -> ComplianceMatrix:
+        """Extract key requirements and map them to the draft's sections."""
+        evidence = self._compliance_evidence()
+        items: List[ComplianceItem] = []
+        used_llm = False
+        if evidence:
+            if self.llm.available:
+                items = self._extract_requirements_llm(evidence, max_items)
+                used_llm = bool(items)
+            if not items:
+                items = self._extract_requirements_rules(evidence, max_items)
+                used_llm = False
+        self._map_requirements_to_sections(items, draft)
+        return ComplianceMatrix(
+            notice_id=draft.notice_id, items=items, used_llm=used_llm
+        )
+
+    def _extract_requirements_llm(
+        self, evidence: List[CitationEvidence], max_items: int
+    ) -> List[ComplianceItem]:
+        labels = [e.label for e in evidence]
+        context_parts = []
+        for e in evidence:
+            full = self.solicitation.by_label.get(e.label, e.snippet)
+            context_parts.append(f"[{e.label}]\n{full[:1500]}")
+        context = "\n\n".join(context_parts)
+        instruction = (
+            f"Extract up to {max_items} of the MOST IMPORTANT compliance "
+            "requirements an offeror must satisfy, drawn ONLY from the CONTEXT. "
+            "Prioritize Section L submission instructions, Section M evaluation "
+            "factors, and mandatory 'shall'/'must' statements. Be concise and "
+            "specific; do not invent requirements. Return a JSON object of the "
+            'form {"requirements": [{"requirement": str, "category": one of '
+            '["Section L","Section M","Evaluation","SOW (shall)","Other"], '
+            '"source_label": one of the bracketed labels shown in the CONTEXT}]}. '
+            "Use the exact source_label that the requirement came from."
+        )
+        try:
+            result = self.llm.complete(
+                instruction=instruction,
+                context=context,
+                sources=labels,
+                max_tokens=1400,
+                json_mode=True,
+            )
+        except LLMUnavailable as exc:
+            logger.info("Compliance LLM extraction unavailable: %s", exc)
+            return []
+
+        raw = _parse_json_object(result.text)
+        if not raw:
+            return []
+        reqs = raw.get("requirements") or raw.get("items") or []
+        items: List[ComplianceItem] = []
+        label_set = set(labels)
+        for entry in reqs:
+            if not isinstance(entry, dict):
+                continue
+            text = str(entry.get("requirement") or "").strip()
+            if not text:
+                continue
+            category = _normalize_category(entry.get("category"))
+            label = str(entry.get("source_label") or "").strip()
+            if label not in label_set:
+                # Model returned an unknown label; re-ground via semantic search.
+                best = self.solicitation.search(text, k=1)
+                label = best[0].label if best else (labels[0] if labels else "Solicitation")
+            snippet = _snippet(self.solicitation.by_label.get(label, ""))
+            items.append(
+                ComplianceItem(
+                    requirement=text,
+                    category=category,
+                    source_label=label,
+                    source_snippet=snippet,
+                )
+            )
+            if len(items) >= max_items:
+                break
+        return items
+
+    def _extract_requirements_rules(
+        self, evidence: List[CitationEvidence], max_items: int
+    ) -> List[ComplianceItem]:
+        """Regex-based fallback: pull 'shall'/'must'/evaluation sentences."""
+        items: List[ComplianceItem] = []
+        seen_text: set = set()
+        # Evaluation/Section M language first, then general mandatory statements.
+        for ev in evidence:
+            full = self.solicitation.by_label.get(ev.label, ev.snippet)
+            for match in _REQUIREMENT_RE.finditer(full):
+                sentence = " ".join(match.group(0).split()).strip()
+                if len(sentence) < 25 or len(sentence) > 400:
+                    continue
+                key = sentence.lower()
+                if key in seen_text:
+                    continue
+                seen_text.add(key)
+                items.append(
+                    ComplianceItem(
+                        requirement=sentence,
+                        category=_categorize(sentence),
+                        source_label=ev.label,
+                        source_snippet=_snippet(full),
+                    )
+                )
+                if len(items) >= max_items:
+                    return _prioritize(items)
+        return _prioritize(items)
+
+    def remap_compliance(self, matrix: ComplianceMatrix, draft: ProposalDraft) -> None:
+        """Re-derive each requirement's mapped section + status from current text.
+
+        Preserves any status/notes the user manually edited away from the
+        auto-default is *not* attempted here — call after section content changes
+        (e.g. "strengthen") to refresh the auto-mapping.
+        """
+        self._map_requirements_to_sections(matrix.items, draft)
+
+    def _map_requirements_to_sections(
+        self, items: List[ComplianceItem], draft: ProposalDraft
+    ) -> None:
+        """Assign each requirement to its best-matching section + a status."""
+        if not items or not draft.sections:
+            return
+        sections = draft.sections
+        sec_texts = [f"{s.title}. {s.content}" for s in sections]
+        sec_vecs = self.backend.embed(sec_texts)
+        req_vecs = self.backend.embed([it.requirement for it in items])
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            sims = req_vecs @ sec_vecs.T
+        sims = np.nan_to_num(sims, nan=-1.0, posinf=-1.0, neginf=-1.0)
+        for i, item in enumerate(items):
+            row = sims[i]
+            j = int(np.argmax(row))
+            best = float(row[j])
+            item.section_id = sections[j].section_id
+            item.section_title = sections[j].title
+            item.match_score = best
+            if best >= _ADDRESSED_THRESHOLD:
+                item.status = STATUS_ADDRESSED
+            elif best >= _PARTIAL_THRESHOLD:
+                item.status = STATUS_PARTIAL
+            else:
+                item.status = STATUS_NOT_ADDRESSED
 
 
 # --------------------------------------------------------------------------- #
@@ -386,6 +694,75 @@ def draft_to_docx_bytes(draft: ProposalDraft) -> bytes:
             for s in section.sources:
                 document.add_paragraph(s.label, style="List Bullet")
 
+    if draft.compliance and draft.compliance.items:
+        _add_compliance_table_to_doc(document, draft.compliance)
+
     buffer = io.BytesIO()
     document.save(buffer)
+    return buffer.getvalue()
+
+
+def _add_compliance_table_to_doc(document, matrix: ComplianceMatrix) -> None:
+    """Append the compliance matrix as a Word table."""
+    document.add_page_break()
+    document.add_heading("Compliance Matrix", level=1)
+    counts = matrix.status_counts()
+    document.add_paragraph(
+        f"Summary: {counts[STATUS_ADDRESSED]} addressed · "
+        f"{counts[STATUS_PARTIAL]} partial · "
+        f"{counts[STATUS_NOT_ADDRESSED]} not addressed. "
+        "Status is an auto-generated starting point — review and adjust.",
+        style="Intense Quote",
+    )
+    headers = ["#", "Requirement / Factor", "Category", "Source", "Section", "Status", "Notes"]
+    table = document.add_table(rows=1, cols=len(headers))
+    try:
+        table.style = "Light Grid Accent 1"
+    except KeyError:  # pragma: no cover - style availability varies
+        pass
+    for cell, head in zip(table.rows[0].cells, headers):
+        cell.text = head
+    for i, item in enumerate(matrix.items, start=1):
+        cells = table.add_row().cells
+        cells[0].text = str(i)
+        cells[1].text = item.requirement
+        cells[2].text = item.category
+        cells[3].text = item.source_label
+        cells[4].text = item.section_title or "—"
+        cells[5].text = item.status
+        cells[6].text = item.notes or ""
+
+
+def compliance_matrix_to_xlsx_bytes(matrix: ComplianceMatrix) -> bytes:
+    """Render the compliance matrix to an .xlsx workbook (bytes)."""
+    import pandas as pd
+
+    rows = [
+        {
+            "#": i,
+            "Requirement / Factor": item.requirement,
+            "Category": item.category,
+            "Source": item.source_label,
+            "Source Excerpt": item.source_snippet,
+            "Proposal Section": item.section_title or "",
+            "Status": item.status,
+            "Match Score": round(item.match_score, 3) if item.match_score is not None else "",
+            "Notes": item.notes or "",
+        }
+        for i, item in enumerate(matrix.items, start=1)
+    ]
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "#", "Requirement / Factor", "Category", "Source", "Source Excerpt",
+            "Proposal Section", "Status", "Match Score", "Notes",
+        ],
+    )
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Compliance Matrix")
+        worksheet = writer.sheets["Compliance Matrix"]
+        widths = {"A": 5, "B": 60, "C": 14, "D": 32, "E": 50, "F": 26, "G": 14, "H": 12, "I": 40}
+        for col, width in widths.items():
+            worksheet.column_dimensions[col].width = width
     return buffer.getvalue()

@@ -16,6 +16,17 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Suggested document categories (folder-like). Users can also type their own.
+DEFAULT_CATEGORIES = [
+    "Past Performance",
+    "Capabilities",
+    "Technical",
+    "Management",
+    "Pricing",
+    "Certifications",
+    "Other",
+]
+
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -29,10 +40,12 @@ class Document(BaseModel):
     doc_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     name: str
     source_type: str = "upload"  # upload | attachment | manual
+    category: str = "Uncategorized"  # folder-like grouping (user-assignable)
     content_sha: Optional[str] = None
     char_count: int = 0
     chunk_count: int = 0
     added_at: str = Field(default_factory=_now_iso)
+    indexed_at: str = Field(default_factory=_now_iso)  # updated on (re)embed
     tags: List[str] = Field(default_factory=list)
 
     @staticmethod

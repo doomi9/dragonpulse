@@ -10,6 +10,7 @@ from __future__ import annotations
 import streamlit as st
 
 from dragonpulse.config.logging_config import get_logger
+from dragonpulse.models.knowledge import DEFAULT_CATEGORIES
 from dragonpulse.processors.embeddings import describe_backend, get_embedding_backend
 from dragonpulse.processors.text_extract import (
     UnsupportedDocument,
@@ -20,6 +21,7 @@ from dragonpulse.ui import state
 logger = get_logger(__name__)
 
 _SUPPORTED = ["pdf", "docx", "txt", "md"]
+_ALL_CATEGORIES = DEFAULT_CATEGORIES
 
 
 def render_knowledge() -> None:
@@ -83,10 +85,10 @@ def _render_backend_status(kb) -> None:
 
     if kb.stats().chunks > 0:
         cols = st.columns([1, 3])
-        if cols[0].button("🔄 Re-index", width="stretch",
-                          help="Detect the best available backend and rebuild embeddings."):
+        if cols[0].button("🔄 Re-index all documents", width="stretch",
+                          help="Detect the best available backend and rebuild all embeddings."):
             new_backend = get_embedding_backend(kb.settings)
-            with st.spinner("Re-embedding your documents locally…"):
+            with st.spinner("Re-embedding every document locally…"):
                 sig = kb.reindex(new_backend)
             new_status = describe_backend(kb.backend, kb.settings)
             if new_status.is_semantic:
@@ -98,41 +100,54 @@ def _render_backend_status(kb) -> None:
 
 
 def _render_uploader(kb) -> None:
-    st.markdown("**Add documents**")
+    st.markdown("**Add documents (bulk upload supported)**")
     files = st.file_uploader(
         "Upload past proposals / performance docs",
         type=_SUPPORTED,
         accept_multiple_files=True,
-        help="PDF, DOCX, TXT, MD. Files are parsed, chunked, and embedded locally.",
+        help="PDF, DOCX, TXT, MD. Drag in several at once — they're parsed, "
+        "chunked, and embedded locally.",
     )
-    tags_raw = st.text_input(
+    c1, c2 = st.columns(2)
+    category = c1.selectbox(
+        "Category (folder)",
+        _ALL_CATEGORIES,
+        index=0,
+        help="Group documents so drafts can target the right kind of evidence.",
+    )
+    tags_raw = c2.text_input(
         "Optional tags (comma-separated)",
-        placeholder="e.g. engineering, past-performance, idiq",
+        placeholder="e.g. data-center, idiq, army",
     )
-    if st.button("📥 Index uploaded documents", type="primary", width="stretch"):
+    label = f"📥 Index {len(files)} document(s)" if files else "📥 Index uploaded documents"
+    if st.button(label, type="primary", width="stretch"):
         if not files:
             st.warning("Choose one or more files first.")
             return
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
         indexed, skipped, failed = 0, 0, 0
-        with st.spinner("Extracting, chunking, and embedding locally…"):
-            for f in files:
-                try:
-                    text = extract_text_from_bytes(f.getvalue(), f.name)
-                    before = {d.doc_id for d in kb.list_documents()}
-                    doc = kb.add_document(f.name, text, source_type="upload", tags=tags)
-                    if doc.doc_id in before:
-                        skipped += 1
-                    else:
-                        indexed += 1
-                except UnsupportedDocument as exc:
-                    failed += 1
-                    st.error(f"{f.name}: {exc}")
-                except Exception as exc:  # noqa: BLE001
-                    failed += 1
-                    logger.exception("Indexing failed for %s", f.name)
-                    st.error(f"{f.name}: unexpected error: {exc}")
-        msg = f"Indexed {indexed} document(s)."
+        progress = st.progress(0.0, text="Starting…")
+        for idx, f in enumerate(files, start=1):
+            progress.progress(idx / len(files), text=f"Indexing {f.name}…")
+            try:
+                text = extract_text_from_bytes(f.getvalue(), f.name)
+                before = {d.doc_id for d in kb.list_documents()}
+                doc = kb.add_document(
+                    f.name, text, source_type="upload", category=category, tags=tags
+                )
+                if doc.doc_id in before:
+                    skipped += 1
+                else:
+                    indexed += 1
+            except UnsupportedDocument as exc:
+                failed += 1
+                st.error(f"{f.name}: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                logger.exception("Indexing failed for %s", f.name)
+                st.error(f"{f.name}: unexpected error: {exc}")
+        progress.empty()
+        msg = f"Indexed {indexed} document(s) into '{category}'."
         if skipped:
             msg += f" Skipped {skipped} duplicate(s)."
         if failed:
@@ -178,21 +193,52 @@ def _render_library(kb) -> None:
         st.info("No documents indexed yet.")
         return
 
-    for doc in docs:
-        with st.container(border=True):
-            cols = st.columns([5, 2, 1])
-            tag_str = f" · _tags: {', '.join(doc.tags)}_" if doc.tags else ""
-            cols[0].markdown(f"**{doc.name}**{tag_str}")
-            cols[0].caption(
-                f"{doc.chunk_count} chunks · {doc.char_count:,} chars · "
-                f"added {doc.added_at} · {doc.source_type}"
-            )
-            if cols[2].button("🗑️", key=f"del_{doc.doc_id}", help="Remove from KB"):
-                kb.delete_document(doc.doc_id)
-                st.session_state.pop(state.KEY_KB_HITS, None)
-                st.rerun()
+    used = kb.categories()
+    filter_options = ["All categories"] + used
+    chosen = st.selectbox("Filter by category", filter_options, index=0)
+    visible = docs if chosen == "All categories" else [d for d in docs if d.category == chosen]
 
+    # Group by category for a folder-like view.
+    by_cat: dict = {}
+    for doc in visible:
+        by_cat.setdefault(doc.category, []).append(doc)
+
+    for category in sorted(by_cat):
+        st.markdown(f"📁 **{category}** ({len(by_cat[category])})")
+        for doc in by_cat[category]:
+            _render_doc_row(kb, doc)
+
+    st.divider()
     if st.button("Clear entire knowledge base", help="Deletes all indexed docs"):
         kb.clear()
         st.session_state.pop(state.KEY_KB_HITS, None)
         st.rerun()
+
+
+def _render_doc_row(kb, doc) -> None:
+    with st.container(border=True):
+        cols = st.columns([5, 2, 1])
+        tag_str = f" · _tags: {', '.join(doc.tags)}_" if doc.tags else ""
+        cols[0].markdown(f"**{doc.name}**{tag_str}")
+        cols[0].caption(
+            f"{doc.chunk_count} chunks · {doc.char_count:,} chars · "
+            f"added {doc.added_at} · last indexed {doc.indexed_at} · {doc.source_type}"
+        )
+        # Inline category re-assignment.
+        opts = _ALL_CATEGORIES + (
+            [doc.category] if doc.category not in _ALL_CATEGORIES else []
+        )
+        new_cat = cols[1].selectbox(
+            "Category",
+            opts,
+            index=opts.index(doc.category) if doc.category in opts else 0,
+            key=f"cat_{doc.doc_id}",
+            label_visibility="collapsed",
+        )
+        if new_cat != doc.category:
+            kb.update_document(doc.doc_id, category=new_cat)
+            st.rerun()
+        if cols[2].button("🗑️", key=f"del_{doc.doc_id}", help="Remove from KB"):
+            kb.delete_document(doc.doc_id)
+            st.session_state.pop(state.KEY_KB_HITS, None)
+            st.rerun()

@@ -175,6 +175,43 @@ def test_kb_skips_duplicates(tmp_path):
     assert kb.stats().documents == 1
 
 
+def test_kb_category_and_metadata(tmp_path):
+    kb = _kb(tmp_path)
+    doc = kb.add_document(
+        "PastPerf.txt",
+        "power transmission work for the army corps " * 8,
+        category="Past Performance",
+        tags=["army", "power"],
+    )
+    assert doc.category == "Past Performance"
+    assert doc.tags == ["army", "power"]
+    assert doc.indexed_at  # set on index
+    assert "Past Performance" in kb.categories()
+
+
+def test_kb_update_document_category_and_tags(tmp_path):
+    kb = _kb(tmp_path)
+    doc = kb.add_document("Doc.txt", "engineering services " * 10)
+    assert doc.category == "Uncategorized"
+    assert kb.update_document(doc.doc_id, category="Technical", tags=["idiq"]) is True
+    refreshed = next(d for d in kb.list_documents() if d.doc_id == doc.doc_id)
+    assert refreshed.category == "Technical"
+    assert refreshed.tags == ["idiq"]
+    assert kb.update_document("missing", category="X") is False
+
+
+def test_kb_reindex_updates_indexed_at(tmp_path):
+    kb = _kb(tmp_path)
+    doc = kb.add_document("Doc.txt", "substation upgrades " * 10)
+    original = doc.indexed_at
+    import time as _t
+
+    _t.sleep(1.1)  # timestamps are second-resolution
+    kb.reindex()
+    refreshed = next(d for d in kb.list_documents() if d.doc_id == doc.doc_id)
+    assert refreshed.indexed_at >= original
+
+
 def test_kb_reindexes_on_backend_change(tmp_path):
     kb = _kb(tmp_path)
     kb.add_document("Doc.txt", "grid modernization and substation upgrades " * 10)

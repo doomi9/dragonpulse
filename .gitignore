@@ -9,6 +9,7 @@ data/cache/
 data/attachments/
 data/rag/
 data/knowledge_base/
+data/drafts/
 *.sqlite
 *.duckdb
 

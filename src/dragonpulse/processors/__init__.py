@@ -13,6 +13,7 @@ from dragonpulse.processors.attachments import (
     extract_text,
 )
 from dragonpulse.processors.checklist import ChecklistItem, build_checklist
+from dragonpulse.processors.draft_store import DraftStore
 from dragonpulse.processors.embeddings import (
     BackendStatus,
     describe_backend,
@@ -26,6 +27,7 @@ from dragonpulse.processors.proposal import (
     SECTION_SPECS,
     ProposalGenerator,
     SectionSpec,
+    compliance_matrix_to_xlsx_bytes,
     draft_to_docx_bytes,
 )
 from dragonpulse.processors.text_extract import (
@@ -60,4 +62,6 @@ __all__ = [
     "SectionSpec",
     "SECTION_SPECS",
     "draft_to_docx_bytes",
+    "compliance_matrix_to_xlsx_bytes",
+    "DraftStore",
 ]

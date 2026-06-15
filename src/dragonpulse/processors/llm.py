@@ -91,6 +91,7 @@ class LLMClient:
         context: str,
         sources: List[str],
         max_tokens: int = 700,
+        json_mode: bool = False,
     ) -> LLMResult:
         """Run a grounded completion.
 
@@ -102,24 +103,30 @@ class LLMClient:
             The grounding facts. The model is told to use only these.
         sources:
             Human-readable source labels recorded on the result.
+        json_mode:
+            When True, request a JSON object response (``response_format``).
+            Works with OpenAI and local OpenAI-compatible servers (Ollama).
         """
         client = self._ensure_client()
         user_message = (
             f"CONTEXT (cite from these only):\n{context}\n\n"
             f"TASK:\n{instruction}"
         )
-        logger.info("LLM completion via model=%s (base_url set=%s)",
-                    self.settings.llm_model, bool(self.settings.llm_base_url))
+        logger.info("LLM completion via model=%s (base_url set=%s, json=%s)",
+                    self.settings.llm_model, bool(self.settings.llm_base_url), json_mode)
+        kwargs = {
+            "model": self.settings.llm_model,
+            "temperature": self.settings.llm_temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": _GROUNDING_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
         try:
-            resp = client.chat.completions.create(
-                model=self.settings.llm_model,
-                temperature=self.settings.llm_temperature,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": _GROUNDING_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-            )
+            resp = client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - normalize all SDK errors
             raise LLMUnavailable(f"LLM call failed: {exc}") from exc
 

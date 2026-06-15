@@ -33,6 +33,12 @@ from dragonpulse.processors.text_extract import chunk_text
 logger = get_logger(__name__)
 
 
+def _now_iso() -> str:
+    import time
+
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+
+
 class KnowledgeBase:
     """A persistent, local vector store over document chunks."""
 
@@ -135,6 +141,9 @@ class KnowledgeBase:
             self._vectors = np.zeros((0, self.backend.dimension), dtype=np.float32)
         else:
             self._vectors = self.backend.embed([c.text for c in self._chunks])
+        now = _now_iso()
+        for doc in self._documents:
+            doc.indexed_at = now
         self._save()
 
     def reindex(self, backend: Optional[EmbeddingBackend] = None) -> str:
@@ -176,6 +185,7 @@ class KnowledgeBase:
         text: str,
         *,
         source_type: str = "upload",
+        category: str = "Uncategorized",
         tags: Optional[List[str]] = None,
         skip_if_duplicate: bool = True,
     ) -> Document:
@@ -202,6 +212,7 @@ class KnowledgeBase:
         doc = Document(
             name=name,
             source_type=source_type,
+            category=category or "Uncategorized",
             content_sha=sha,
             char_count=len(text),
             chunk_count=len(pieces),
@@ -237,6 +248,29 @@ class KnowledgeBase:
             RetrievedChunk(chunk=self._chunks[i], score=float(scores[i]))
             for i in top_idx
         ]
+
+    def update_document(
+        self,
+        doc_id: str,
+        *,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> bool:
+        """Update a document's organizational metadata (category/tags)."""
+        with self._lock:
+            doc = next((d for d in self._documents if d.doc_id == doc_id), None)
+            if doc is None:
+                return False
+            if category is not None:
+                doc.category = category or "Uncategorized"
+            if tags is not None:
+                doc.tags = tags
+            self._save()
+        return True
+
+    def categories(self) -> List[str]:
+        """Sorted, distinct categories currently in use."""
+        return sorted({d.category for d in self._documents})
 
     def delete_document(self, doc_id: str) -> bool:
         """Remove a document and all its chunks/vectors. Returns True if found."""

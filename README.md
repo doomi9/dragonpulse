@@ -257,6 +257,22 @@ How the switch works:
   "Using semantic embeddings via Ollama" or "Using lexical (keyword) search".
 - **Fully local:** no external API keys are ever required for embeddings.
 
+### Managing your documents
+
+The Knowledge Base tab is a small document manager:
+
+- **Bulk upload** — drag in many PDFs/DOCX/TXT/MD at once; a progress bar tracks
+  indexing.
+- **Organize into categories** — assign a folder‑like category at upload
+  (Past Performance, Capabilities, Technical, Management, Pricing,
+  Certifications, Other) and optional tags. Re‑assign a document's category later
+  from the library, and **filter** the library by category.
+- **Rich metadata** — each document shows its chunk count, character count,
+  added date, **last‑indexed** date, and source type.
+- **Re‑index all documents** — one click rebuilds every embedding (e.g. after
+  switching backends).
+- **Delete** individual documents or clear the whole base.
+
 ---
 
 ## 📝 Proposal Generator
@@ -284,14 +300,28 @@ high‑level Pricing Strategy notes.
 **How to use it:**
 
 1. Run a search in **Discover** (or open one in **Detail**).
-2. Open the **Proposal Generator** tab and pick the opportunity.
-3. Click **📎 Load & extract attachments** (or paste the SOW text directly if the
-   attachments are scanned images).
-4. Click **⚙️ Generate Draft**. Each section appears in an expander with a
+2. Open the **Proposal Generator** tab and pick the opportunity. Its attachments
+   are **auto‑loaded and extracted in the background** with a live status message
+   — no extra click. (Use **🔄 Reload attachments** or paste the SOW text manually
+   as a fallback for scanned/unavailable files.)
+3. Click **⚙️ Generate Draft**. Each section appears in an expander with a
    **📚 Sources / citations** popover showing the exact excerpts used.
-5. Refine any section with chat‑style feedback (e.g. *"focus on liquid cooling"*)
+4. Refine any section with chat‑style feedback (e.g. *"focus on liquid cooling"*)
    and click **🔁 Regenerate** — it re‑uses the solicitation + KB context.
-6. **Export** the whole draft to **Markdown** or **DOCX**.
+5. **Export** the whole draft to **Markdown** or **DOCX**.
+
+The **Relevant Past Performance** section is extra careful: it pulls a wider set
+of knowledge‑base matches and, when there's no strong direct match, it stays
+honest — framing the most relevant work as **transferable experience** instead of
+overclaiming.
+
+### Saved drafts & version history
+
+Every draft can be **saved locally** with a name (stored under `data/drafts/`).
+Per opportunity you get a list of saved drafts showing the **created** and
+**last‑modified** times and a **version** number. You can **load** a previous
+draft to keep working, **update** the one you loaded (which bumps its version),
+or **delete** old drafts. Nothing leaves the machine.
 
 **For full AI prose**, enable a local model in `.env` (everything stays local):
 
@@ -305,6 +335,40 @@ DRAGONPULSE_LLM_MODEL=qwen2.5:14b
 
 Without an LLM the tab still works and produces a grounded, cited scaffold.
 
+### Compliance Matrix
+
+After a draft is generated, DragonPulse automatically builds a **Compliance
+Matrix** — a focused requirement‑traceability table so you can see, at a glance,
+whether the draft covers what the solicitation demands.
+
+**What it captures (the most important items, not everything):**
+
+- **Requirement / Evaluation Factor** — the obligation an offeror must meet.
+- **Category** — Section L (instructions), Section M (evaluation), Evaluation,
+  SOW (`shall`/`must`), or Other.
+- **Source** — a citation back to the exact solicitation chunk it came from.
+- **Proposal Section** — which generated section best addresses it (auto‑mapped
+  via semantic similarity).
+- **Status** — Addressed / Partial / Not Addressed (a conservative auto‑estimate
+  you can override).
+- **Notes** — free‑text, user‑editable.
+
+**How it's built:**
+
+- With an LLM, requirements are extracted in JSON mode from the Section L/M and
+  `shall`/`must` portions of the solicitation, each tied to its source chunk.
+- Without an LLM, a regex fallback pulls the key `shall`/`must`/evaluation
+  sentences — so the matrix still works fully offline.
+- Each requirement is then mapped to the best‑matching proposal section locally
+  (cosine similarity), and a starting Status is derived from that score.
+
+**Use it:** edit **Status** and **Notes** directly in the table. Pick any
+requirement and click **💪 Strengthen this section** to regenerate the mapped
+proposal section with the goal of explicitly addressing that requirement — the
+rest of the draft stays intact and the section's revision history records the
+change. Export the matrix on its own as **Markdown** or **Excel (.xlsx)**, or get
+it appended automatically to the full‑proposal **Markdown** and **DOCX** exports.
+
 ---
 
 ## 🧪 Tests
@@ -315,7 +379,10 @@ DRAGONPULSE_RUN_LIVE=1 pytest -m live    # opt-in: hits real API (uses 1 request
 ```
 
 Covered: cache TTL + secret scrubbing, request budget, model parsing, filter →
-query‑param translation, checklist grounding, and the cache‑first API client.
+query‑param translation, checklist grounding, the cache‑first API client,
+grounded proposal generation, compliance‑matrix extraction/export, the saved‑
+draft store + version history, knowledge‑base categories/metadata, section
+strengthening, and the past‑performance transferable‑experience logic.
 
 ---
 
@@ -364,8 +431,13 @@ query‑param translation, checklist grounding, and the cache‑first API client
 3. ✅ **Proposal generator** — grounded, source‑cited section drafts from the
    solicitation (SOW) + your knowledge base, with per‑section regeneration and
    Markdown/DOCX export. **Done.**
+4. ✅ **Compliance matrix** — auto‑extracted Section L/M & `shall` requirements
+   mapped to proposal sections, with editable status/notes and Markdown/Excel/
+   DOCX export, plus per‑requirement **"strengthen this section"**. **Done.**
+5. ✅ **Workflow polish** — auto‑loaded solicitation attachments, knowledge‑base
+   categories/bulk management, and **saved drafts with version history**. **Done.**
 
 ### Possible future enhancements
 
-- Compliance matrix (Sections L/M → requirement → proposal section mapping).
-- Multi‑opportunity batch drafting and a saved‑draft library.
+- Multi‑opportunity batch drafting.
+- Compliance matrix → DOCX "jump to section" cross‑links.

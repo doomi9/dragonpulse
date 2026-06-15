@@ -167,6 +167,10 @@ class Settings(BaseSettings):
         return self.data_dir / "rag"
 
     @property
+    def drafts_dir(self) -> Path:
+        return self.data_dir / "drafts"
+
+    @property
     def llm_active(self) -> bool:
         """LLM is used when enabled AND reachable.
 
@@ -191,7 +195,13 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         """Create local data directories if they do not yet exist."""
-        for path in (self.data_dir, self.cache_dir, self.attachments_dir, self.rag_dir):
+        for path in (
+            self.data_dir,
+            self.cache_dir,
+            self.attachments_dir,
+            self.rag_dir,
+            self.drafts_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
     def masked_api_key(self) -> str:

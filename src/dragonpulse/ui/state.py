@@ -15,6 +15,7 @@ from dragonpulse.api.awards import AwardsClient
 from dragonpulse.api.opportunities import OpportunitiesClient
 from dragonpulse.config.settings import Settings, get_settings
 from dragonpulse.models.opportunity import Opportunity, OpportunitySearchResult
+from dragonpulse.processors.draft_store import DraftStore
 from dragonpulse.processors.knowledge_base import KnowledgeBase
 
 # Session-state keys (centralized to avoid typos).
@@ -27,6 +28,9 @@ KEY_KB_HITS = "kb_search_hits"
 KEY_PROPOSAL_GEN = "proposal_generator"
 KEY_PROPOSAL_DRAFT = "proposal_draft"
 KEY_PROPOSAL_ATTACH = "proposal_attachments_loaded"
+KEY_PROPOSAL_AUTOLOAD = "proposal_autoload_attempted"  # set[notice_id]
+KEY_PROPOSAL_LOAD_MSG = "proposal_load_message"  # (level, text)
+KEY_PROPOSAL_LOADED_FROM = "proposal_loaded_from_saved"  # draft_id current draft came from
 
 
 @st.cache_resource(show_spinner=False)
@@ -45,6 +49,12 @@ def get_awards_client() -> AwardsClient:
 def get_knowledge_base() -> KnowledgeBase:
     """Return a process-wide KnowledgeBase (cached across reruns)."""
     return KnowledgeBase()
+
+
+@st.cache_resource(show_spinner=False)
+def get_draft_store() -> DraftStore:
+    """Return a process-wide DraftStore (cached across reruns)."""
+    return DraftStore()
 
 
 def settings() -> Settings:
