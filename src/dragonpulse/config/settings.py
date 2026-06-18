@@ -102,8 +102,11 @@ class Settings(BaseSettings):
         default=None, description="OpenAI-compatible base URL (blank = OpenAI cloud)."
     )
     llm_api_key: Optional[str] = Field(default=None)
-    llm_model: str = Field(default="gpt-4o-mini")
-    llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    # Recommended primary model is a strong local model (Llama 3.3 70B, Q3_K_M
+    # quant) served via Ollama. Pull it first:
+    #   ollama pull llama3.3:70b-instruct-q3_K_M
+    llm_model: str = Field(default="llama3.3:70b-instruct-q3_K_M")
+    llm_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
 
     # --- RAG knowledge base -------------------------------------------------
     rag_embedding_backend: EmbeddingBackend = Field(
@@ -115,12 +118,41 @@ class Settings(BaseSettings):
         description="Model name for the ollama/sentence_transformers backends.",
     )
     rag_chunk_chars: int = Field(
-        default=1200, ge=200, le=8000, description="Target characters per chunk."
+        default=3600,
+        ge=200,
+        le=12000,
+        description=(
+            "Target characters per chunk (~900 tokens at 3600). Larger, more "
+            "coherent chunks give a strong model better context."
+        ),
     )
     rag_chunk_overlap: int = Field(
-        default=200, ge=0, le=2000, description="Character overlap between chunks."
+        default=400, ge=0, le=2000, description="Character overlap between chunks."
     )
     rag_top_k: int = Field(default=5, ge=1, le=50, description="Default retrieved chunks.")
+    kb_summarize: bool = Field(
+        default=True,
+        description=(
+            "Generate a short per-document summary at ingestion (LLM when "
+            "available, otherwise a heuristic) to enrich retrieval metadata."
+        ),
+    )
+    kb_max_upload_mb: int = Field(
+        default=1000,
+        ge=1,
+        le=2000,
+        description="Maximum Knowledge Base upload size per file, in megabytes.",
+    )
+    kb_ocr_enabled: bool = Field(
+        default=True,
+        description="Auto-OCR scanned/image-only PDFs on upload when text extraction finds none.",
+    )
+    kb_ocr_dpi: int = Field(
+        default=200,
+        ge=72,
+        le=600,
+        description="Render DPI for OCR. Higher is more accurate but slower.",
+    )
 
     # ----------------------------------------------------------------------- #
     # Validators
@@ -192,6 +224,11 @@ class Settings(BaseSettings):
         if self.llm_api_key:
             return self.llm_api_key
         return "local-no-key-required"
+
+    @property
+    def kb_max_upload_bytes(self) -> int:
+        """Maximum Knowledge Base upload size per file, in bytes."""
+        return self.kb_max_upload_mb * 1024 * 1024
 
     def ensure_dirs(self) -> None:
         """Create local data directories if they do not yet exist."""

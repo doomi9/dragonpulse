@@ -13,8 +13,13 @@ from dragonpulse.config.logging_config import get_logger
 from dragonpulse.models.knowledge import DEFAULT_CATEGORIES
 from dragonpulse.processors.embeddings import describe_backend, get_embedding_backend
 from dragonpulse.processors.text_extract import (
+    ScannedPDFError,
     UnsupportedDocument,
     extract_text_from_bytes,
+    format_upload_limit,
+    ocr_available,
+    ocr_pdf_bytes,
+    validate_upload_size,
 )
 from dragonpulse.ui import state
 
@@ -84,8 +89,8 @@ def _render_backend_status(kb) -> None:
         )
 
     if kb.stats().chunks > 0:
-        cols = st.columns([1, 3])
-        if cols[0].button("🔄 Re-index all documents", width="stretch",
+        cols = st.columns(2)
+        if cols[0].button("🔄 Re-index (embeddings only)", width="stretch",
                           help="Detect the best available backend and rebuild all embeddings."):
             new_backend = get_embedding_backend(kb.settings)
             with st.spinner("Re-embedding every document locally…"):
@@ -97,16 +102,65 @@ def _render_backend_status(kb) -> None:
                 st.info(f"Re-indexed {kb.stats().chunks} chunks → {sig} (lexical).")
             st.session_state.pop(state.KEY_KB_HITS, None)
             st.rerun()
+        if cols[1].button(
+            "♻️ Re-chunk + re-index (improved)", width="stretch",
+            help="Rebuild chunks with smarter, larger semantic chunking and refreshed "
+                 "metadata. Keeps your documents and categories.",
+        ):
+            with st.spinner("Re-chunking and re-embedding every document locally…"):
+                info = kb.rechunk_all(regenerate_summary=True)
+            st.success(
+                f"Re-chunked {info['documents']} document(s) → {info['chunks']} "
+                f"chunks using {info['backend']}."
+            )
+            st.session_state.pop(state.KEY_KB_HITS, None)
+            st.rerun()
+
+
+def _render_upload_result() -> None:
+    """Show the outcome of the last index run (survives the post-index rerun)."""
+    result = st.session_state.pop(state.KEY_KB_UPLOAD_RESULT, None)
+    if not result:
+        return
+    indexed, skipped, failed = result["indexed"], result["skipped"], result["failed"]
+    ocred = result.get("ocred", 0)
+    if indexed:
+        msg = f"Indexed {indexed} document(s) into '{result['category']}'."
+        if ocred:
+            msg += f" {ocred} were read via OCR (scanned PDFs)."
+        if skipped:
+            msg += f" Skipped {skipped} duplicate(s)."
+        if failed:
+            msg += f" {failed} failed (see below)."
+        st.success(msg)
+    elif skipped and not failed:
+        st.info(f"Skipped {skipped} duplicate(s) — already in the knowledge base.")
+    for err in result["errors"]:
+        st.error(err)
 
 
 def _render_uploader(kb) -> None:
+    max_mb = kb.settings.kb_max_upload_mb
+    limit_label = format_upload_limit(max_mb)
     st.markdown("**Add documents (bulk upload supported)**")
+    _render_upload_result()
+    ocr_on = kb.settings.kb_ocr_enabled and ocr_available()
+    ocr_note = (
+        " Scanned/image-only PDFs are read automatically with **OCR**."
+        if ocr_on
+        else " Scanned/image-only PDFs need a text layer (OCR) before upload."
+    )
+    st.caption(
+        f"PDF, DOCX, TXT, and MD — up to **{limit_label}** per file. "
+        "Large PDFs are supported; indexing may take longer for big documents."
+        + ocr_note
+    )
     files = st.file_uploader(
         "Upload past proposals / performance docs",
         type=_SUPPORTED,
         accept_multiple_files=True,
-        help="PDF, DOCX, TXT, MD. Drag in several at once — they're parsed, "
-        "chunked, and embedded locally.",
+        help=f"PDF, DOCX, TXT, MD. Up to {limit_label} per file. Drag in several at once — "
+        "they're parsed, chunked, and embedded locally.",
     )
     c1, c2 = st.columns(2)
     category = c1.selectbox(
@@ -125,12 +179,31 @@ def _render_uploader(kb) -> None:
             st.warning("Choose one or more files first.")
             return
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
-        indexed, skipped, failed = 0, 0, 0
+        ocr_on = kb.settings.kb_ocr_enabled and ocr_available()
+        indexed, skipped, failed, ocred = 0, 0, 0, 0
+        errors: list[str] = []
         progress = st.progress(0.0, text="Starting…")
         for idx, f in enumerate(files, start=1):
-            progress.progress(idx / len(files), text=f"Indexing {f.name}…")
+            base = (idx - 1) / len(files)
+            progress.progress(base, text=f"Indexing {f.name}…")
             try:
-                text = extract_text_from_bytes(f.getvalue(), f.name)
+                data = f.getvalue()
+                validate_upload_size(len(data), max_mb, f.name)
+                try:
+                    text = extract_text_from_bytes(data, f.name)
+                except ScannedPDFError:
+                    if not ocr_on:
+                        raise
+                    def _on_page(done, total, _f=f, _base=base):
+                        progress.progress(
+                            _base + (done / total) / len(files),
+                            text=f"OCR {_f.name}: page {done}/{total}…",
+                        )
+
+                    text = ocr_pdf_bytes(
+                        data, dpi=kb.settings.kb_ocr_dpi, page_callback=_on_page
+                    )
+                    ocred += 1
                 before = {d.doc_id for d in kb.list_documents()}
                 doc = kb.add_document(
                     f.name, text, source_type="upload", category=category, tags=tags
@@ -141,18 +214,21 @@ def _render_uploader(kb) -> None:
                     indexed += 1
             except UnsupportedDocument as exc:
                 failed += 1
-                st.error(f"{f.name}: {exc}")
+                errors.append(f"{f.name}: {exc}")
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 logger.exception("Indexing failed for %s", f.name)
-                st.error(f"{f.name}: unexpected error: {exc}")
+                errors.append(f"{f.name}: unexpected error: {exc}")
+        progress.progress(1.0, text="Done.")
         progress.empty()
-        msg = f"Indexed {indexed} document(s) into '{category}'."
-        if skipped:
-            msg += f" Skipped {skipped} duplicate(s)."
-        if failed:
-            msg += f" {failed} failed."
-        st.success(msg)
+        st.session_state[state.KEY_KB_UPLOAD_RESULT] = {
+            "indexed": indexed,
+            "skipped": skipped,
+            "failed": failed,
+            "ocred": ocred,
+            "category": category,
+            "errors": errors,
+        }
         st.rerun()
 
 
@@ -220,10 +296,13 @@ def _render_doc_row(kb, doc) -> None:
         cols = st.columns([5, 2, 1])
         tag_str = f" · _tags: {', '.join(doc.tags)}_" if doc.tags else ""
         cols[0].markdown(f"**{doc.name}**{tag_str}")
+        type_str = f" · type: {doc.doc_type}" if getattr(doc, "doc_type", "") else ""
         cols[0].caption(
-            f"{doc.chunk_count} chunks · {doc.char_count:,} chars · "
+            f"{doc.chunk_count} chunks · {doc.char_count:,} chars{type_str} · "
             f"added {doc.added_at} · last indexed {doc.indexed_at} · {doc.source_type}"
         )
+        if getattr(doc, "summary", ""):
+            cols[0].caption(f"📝 {doc.summary}")
         # Inline category re-assignment.
         opts = _ALL_CATEGORIES + (
             [doc.category] if doc.category not in _ALL_CATEGORIES else []

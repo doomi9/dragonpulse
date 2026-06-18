@@ -12,6 +12,15 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+# Hardcoded primary NAICS codes for the firm (temporary, while the sidebar NAICS
+# controls are removed). 237130 = Power & Communication Line Construction,
+# 541330 = Engineering Services.
+PRIMARY_NAICS: List[str] = ["237130", "541330"]
+
+# Notice types applied by default now that the sidebar control is hidden:
+# Solicitation (o), Combined Synopsis/Solicitation (k), Sources Sought (r).
+DEFAULT_NOTICE_TYPE_CODES: List[str] = ["o", "k", "r"]
+
 
 class OpportunityFilters(BaseModel):
     """User-selected search filters for the Opportunities v2 endpoint."""

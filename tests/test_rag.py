@@ -13,9 +13,14 @@ from dragonpulse.processors.embeddings import (
 )
 from dragonpulse.processors.knowledge_base import KnowledgeBase
 from dragonpulse.processors.text_extract import (
+    ScannedPDFError,
     UnsupportedDocument,
     chunk_text,
     extract_text_from_bytes,
+    extract_text_with_ocr,
+    format_upload_limit,
+    ocr_pdf_bytes,
+    validate_upload_size,
 )
 
 
@@ -315,3 +320,171 @@ def test_auto_backend_prefers_ollama_when_base_url_set(tmp_path, monkeypatch):
     monkeypatch.setattr(emb, "OllamaEmbedding", lambda base_url, model: _FakeOllamaBackend())
     backend = get_embedding_backend(settings)
     assert backend.name == "ollama"
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base upload size limits
+# ---------------------------------------------------------------------------
+def test_kb_max_upload_defaults_to_1gb(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    assert settings.kb_max_upload_mb == 1000
+    assert settings.kb_max_upload_bytes == 1000 * 1024 * 1024
+
+
+def test_format_upload_limit():
+    assert format_upload_limit(1000) == "1 GB"
+    assert format_upload_limit(500) == "500 MB"
+    assert format_upload_limit(2000) == "2 GB"
+
+
+def test_validate_upload_size_accepts_at_limit():
+    one_gb = 1000 * 1024 * 1024
+    validate_upload_size(one_gb, max_mb=1000, filename="big.pdf")
+
+
+def test_validate_upload_size_rejects_over_limit():
+    over = 1000 * 1024 * 1024 + 1
+    with pytest.raises(UnsupportedDocument, match="maximum upload size is 1 GB"):
+        validate_upload_size(over, max_mb=1000, filename="too-big.pdf")
+
+
+def test_validate_upload_size_accepts_large_pdf_under_limit():
+    """Simulate a large-but-allowed PDF without reading a real 1 GB file."""
+    size = 900 * 1024 * 1024
+    validate_upload_size(size, max_mb=1000, filename="past-performance.pdf")
+    # Extraction still works on small representative bytes.
+    text = extract_text_from_bytes(b"Sample past performance narrative.", "notes.txt")
+    assert "past performance" in text
+
+
+class _FakePage:
+    def __init__(self, text, images):
+        self._text = text
+        self.images = images
+
+    def extract_text(self):
+        return self._text
+
+
+class _FakePdf:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_scanned_pdf_raises_scanned_error(monkeypatch):
+    """An image-only PDF (no text layer) raises ScannedPDFError (an OCR signal)."""
+    import pdfplumber
+
+    monkeypatch.setattr(
+        pdfplumber, "open", lambda _buf: _FakePdf([_FakePage("", [{"name": "Im0"}])])
+    )
+    with pytest.raises(ScannedPDFError, match="scanned"):
+        extract_text_from_bytes(b"%PDF-1.4 fake", "scan.pdf")
+    # ScannedPDFError is a subclass so existing UnsupportedDocument handlers still catch it.
+    assert issubclass(ScannedPDFError, UnsupportedDocument)
+
+
+class _FakePixmap:
+    def tobytes(self, _fmt):
+        # 1x1 white PNG.
+        import base64
+
+        b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+            "AAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        return base64.b64decode(b64)
+
+
+class _FakeFitzPage:
+    def get_pixmap(self, dpi=200):
+        return _FakePixmap()
+
+
+class _FakeFitzDoc:
+    def __init__(self, n):
+        self._pages = [_FakeFitzPage() for _ in range(n)]
+        self.page_count = n
+
+    def __iter__(self):
+        return iter(self._pages)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_ocr_pdf_bytes_uses_tesseract(monkeypatch):
+    """OCR renders each page and concatenates Tesseract output; progress fires."""
+    import fitz
+    import pytesseract
+
+    monkeypatch.setattr(fitz, "open", lambda stream, filetype: _FakeFitzDoc(2))
+    monkeypatch.setattr(pytesseract, "image_to_string", lambda img, lang="eng": "Recognized text")
+    import dragonpulse.processors.text_extract as te
+
+    monkeypatch.setattr(te.shutil, "which", lambda _name: "/usr/bin/tesseract")
+
+    seen = []
+    text = ocr_pdf_bytes(b"%PDF fake", page_callback=lambda d, t: seen.append((d, t)))
+    assert "Recognized text" in text
+    assert seen == [(1, 2), (2, 2)]
+
+
+def test_ocr_pdf_bytes_requires_engine(monkeypatch):
+    """Missing Tesseract binary yields a clear, actionable error."""
+    import fitz
+
+    monkeypatch.setattr(fitz, "open", lambda stream, filetype: _FakeFitzDoc(1))
+    import dragonpulse.processors.text_extract as te
+
+    monkeypatch.setattr(te.shutil, "which", lambda _name: None)
+    with pytest.raises(UnsupportedDocument, match="Tesseract"):
+        ocr_pdf_bytes(b"%PDF fake")
+
+
+def test_extract_text_with_ocr_passthrough_for_text():
+    """A normal text file extracts without invoking OCR."""
+    assert extract_text_with_ocr(b"plain solicitation text", "sow.txt") == (
+        "plain solicitation text"
+    )
+
+
+def test_extract_text_with_ocr_falls_back_on_scanned(monkeypatch):
+    """A scanned PDF triggers the OCR fallback when enabled and available."""
+    import dragonpulse.processors.text_extract as te
+
+    monkeypatch.setattr(te, "extract_text_from_bytes",
+                        lambda d, f: (_ for _ in ()).throw(ScannedPDFError("scanned")))
+    monkeypatch.setattr(te, "ocr_available", lambda: True)
+    monkeypatch.setattr(te, "ocr_pdf_bytes",
+                        lambda data, dpi=200, page_callback=None: "ocr text")
+    assert extract_text_with_ocr(b"x", "scan.pdf", ocr_enabled=True) == "ocr text"
+
+
+def test_extract_text_with_ocr_reraises_when_disabled(monkeypatch):
+    """With OCR disabled, a scanned PDF surfaces the original error."""
+    import dragonpulse.processors.text_extract as te
+
+    monkeypatch.setattr(te, "extract_text_from_bytes",
+                        lambda d, f: (_ for _ in ()).throw(ScannedPDFError("scanned")))
+    with pytest.raises(ScannedPDFError):
+        extract_text_with_ocr(b"x", "scan.pdf", ocr_enabled=False)
+
+
+def test_text_pdf_extracts_normally(monkeypatch):
+    """A PDF with a real text layer extracts its text."""
+    import pdfplumber
+
+    monkeypatch.setattr(
+        pdfplumber, "open", lambda _buf: _FakePdf([_FakePage("Hello world", [])])
+    )
+    assert extract_text_from_bytes(b"%PDF-1.4 fake", "doc.pdf") == "Hello world"

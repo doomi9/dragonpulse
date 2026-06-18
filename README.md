@@ -17,8 +17,12 @@ locally on your machine.
 
 ## ✅ What works today (MVP)
 
-- **SAM.gov Opportunities v2** search with sidebar filters (keyword, NAICS,
-  set‑asides, notice types, agency, posted‑date range).
+- **Knowledge Base‑driven discovery** via **⭐ Priority Picks** — the primary way
+  to find work. It reads your documents, auto‑generates the search queries, and
+  surfaces the top 5 best‑fit opportunities (no manual keywords needed).
+- **SAM.gov Opportunities v2** search in the **Discover** tab with a deliberately
+  minimal set of sidebar filters (**posted‑date range** + **max results**). NAICS
+  is currently locked to **237130** and **541330**.
 - **Cache‑first API client** with disk caching, a **daily live‑request budget
   guardrail** (protects the 10‑requests/day basic key), pagination, typed
   Pydantic models, and graceful, rate‑limit‑aware error handling.
@@ -38,10 +42,20 @@ locally on your machine.
   sidebar filters, computes count/min/median/mean/max, charts the award‑amount
   distribution, and lists comparable awards (awardee + amount) with CSV export.
 - **RAG knowledge base** (local): upload past proposals/performance (PDF, DOCX,
-  TXT, MD), index them into an **on‑disk vector store**, and run grounded
+  TXT, MD) up to **1 GB per file**, index them into an **on‑disk vector store**, and run grounded
   search where every hit **cites its source document + chunk**. Works offline
   with a pure‑NumPy hashing embedding; **auto‑upgrades to semantic embeddings
-  via local Ollama** when configured (see below).
+  via local Ollama** when configured (see below). Ingestion uses **smarter,
+  larger semantic chunking** (heading‑ and sentence‑aware, ~900‑token chunks)
+  and enriches each document with **metadata** (category, inferred document type,
+  and a short summary) plus **context‑aware embeddings** for sharper retrieval.
+  Use **♻️ Re‑chunk + re‑index (improved)** to rebuild an existing library with
+  these settings without re‑uploading (documents and categories are preserved).
+- **Priority Picks** (smart recommendations): reads your Knowledge Base, derives
+  the keywords that describe your work, searches SAM.gov (cache‑first), and ranks
+  the **top 5 best‑fit opportunities** — each with a plain‑English "why this
+  matches" grounded in your own documents, one click from the Detail or Proposal
+  tab. **Runs automatically and refreshes every 24 hours** (with manual refresh).
 
 > 🚧 **Not yet built (next phase, awaiting your go‑ahead):** the proposal
 > generator. Its building blocks (attachment extraction, grounded LLM wrapper,
@@ -201,17 +215,25 @@ Then open the URL Streamlit prints (usually <http://localhost:8501>).
 
 DragonPulse works fully without an LLM (deterministic, grounded templates).
 
-**Recommended: a fully‑local model via [Ollama](https://ollama.com)** — private,
-no cloud, no API costs:
+**Recommended high‑quality model: `llama3.3:70b-instruct-q3_K_M`, fully‑local via
+[Ollama](https://ollama.com)** — private, no cloud, no API costs. Its strong
+reasoning lets DragonPulse rely on **fewer retrieved chunks** and write more
+**original, on‑voice** prose. It needs roughly **34 GB** of RAM/VRAM; if that's
+too heavy, `qwen2.5:14b` or `llama3.2:3b` are good lighter fallbacks.
+
+> ⏳ **Note:** the 70B model is the highest‑quality option but is **noticeably
+> slower during proposal generation** than the lighter models — expect longer
+> per‑section drafting times. Document summaries, checklists, and outreach are
+> short and stay fast.
 
 ```bash
-ollama pull llama3.1        # one-time
+ollama pull llama3.3:70b-instruct-q3_K_M        # one-time (~34 GB download)
 ```
 
 ```dotenv
 DRAGONPULSE_LLM_ENABLED=true
 DRAGONPULSE_LLM_BASE_URL=http://localhost:11434/v1
-DRAGONPULSE_LLM_MODEL=llama3.1
+DRAGONPULSE_LLM_MODEL=llama3.3:70b-instruct-q3_K_M
 DRAGONPULSE_LLM_API_KEY=ollama      # any placeholder; local servers ignore it
 ```
 
@@ -261,8 +283,12 @@ How the switch works:
 
 The Knowledge Base tab is a small document manager:
 
-- **Bulk upload** — drag in many PDFs/DOCX/TXT/MD at once; a progress bar tracks
-  indexing.
+- **Bulk upload** — drag in many PDFs/DOCX/TXT/MD at once (up to **1 GB per
+  file**); a progress bar tracks indexing.
+- **Automatic OCR** — scanned / image-only PDFs (no text layer) are recognized
+  on upload with **PyMuPDF + Tesseract**, fully locally. Install the engine once
+  (`brew install tesseract`); without it, such PDFs are skipped with a clear
+  message. Tune render quality with `DRAGONPULSE_KB_OCR_DPI`.
 - **Organize into categories** — assign a folder‑like category at upload
   (Past Performance, Capabilities, Technical, Management, Pricing,
   Certifications, Other) and optional tags. Re‑assign a document's category later
@@ -272,6 +298,105 @@ The Knowledge Base tab is a small document manager:
 - **Re‑index all documents** — one click rebuilds every embedding (e.g. after
   switching backends).
 - **Delete** individual documents or clear the whole base.
+
+---
+
+## ⭐ Priority Picks (smart recommendations)
+
+The **Priority Picks** tab is the **main, Knowledge Base‑driven way to discover
+opportunities**. It turns "what your firm has done" into "what your firm should
+bid on next" — with **minimal manual input**. It runs **automatically** on open,
+shows the **top 5 best‑fit** opportunities, and **refreshes every 24 hours**.
+
+**How it works:**
+
+1. **Mine your documents (no manual keywords).** It automatically reads your
+   **Capabilities**, **Technical**, and **Past Performance** documents and
+   extracts **broad capability/service keywords** that recur *across* documents
+   (e.g. `power`, `excitation`, `engineering services`, `substation`), while
+   filtering out one‑off project names and locations (e.g. `libby dam`,
+   `army corps`). The result tracks *what your firm does*, not a single project.
+2. **Search SAM.gov (cache‑first, budget‑aware, with a keyless crawl fallback).**
+   Each keyword becomes one Opportunities `/search` call, reusing the disk cache
+   wherever possible. The hardcoded **NAICS codes (237130, 541330)** and an
+   internal **last‑120‑day window** scope the search (the date range is not shown
+   here). If the daily live‑request budget is reached, Priority Picks first
+   **falls back to crawling SAM.gov's public site** (the same keyless method as
+   the manual link loader — *no API requests used*). If that also can't return
+   anything, it shows **one clean message** with an auto‑retry countdown, e.g.
+   *"Daily SAM.gov request limit reached. Priority Picks will automatically try
+   again in 6h 14m."*
+3. **Rank by fit.** De‑duplicated candidates are scored by **semantic similarity
+   to your library** (reusing the Knowledge Base's embedding backend), with a
+   small bonus for matching multiple keywords, then sorted with soonest deadlines
+   breaking ties.
+
+**Each recommendation shows** Title · Agency · NAICS · days left/deadline ·
+set‑aside, a **"Why this matches"** explanation grounded in your documents, and an
+expandable list of the exact **evidence chunks** (cited) that drove the match.
+
+**Controls (kept intentionally light):** it runs and refreshes on its own once
+every 24 hours; click **🔄 Refresh now** to re‑run immediately and bypass the
+cache. Under *Advanced* you can broaden/narrow the document categories it learns
+from. Results are cached per‑configuration, so reopening the tab makes **no new
+API calls**.
+
+**Integration:** from any pick, click **📄 Open in Detail** or **📝 Draft
+proposal** to send that opportunity straight into the Detail or Proposal
+Generator tab (then switch to that tab).
+
+If the Knowledge Base is empty (or has no documents in the selected categories),
+Priority Picks shows a clear message instead of calling the API.
+
+---
+
+## 📌 Manually load an opportunity (zero API calls)
+
+Already found an opportunity on SAM.gov but **out of daily API requests** — or just
+want to start fast? Load it by hand — no network involved.
+
+**Fastest path (Proposals tab): upload the PDF.** In the **📝 Proposals** tab,
+open **"📌 Manually load an opportunity (upload PDF) — zero API calls"** and:
+
+1. **Upload the solicitation / SOW PDF(s)** — this is the primary step and all you
+   really need. Files are extracted locally, with automatic **OCR** for scanned
+   PDFs.
+2. *(Optional)* Paste the **SAM.gov link** / **Notice ID** and add a **title** and
+   **agency** (plus solicitation # / NAICS under "More details").
+3. Click **🚀 Load & start drafting (no API call)**.
+
+DragonPulse builds a **local opportunity record**, indexes your uploaded
+solicitation, selects it, and drops you right at **⚙️ Generate Draft** — one click
+from a grounded proposal. If you don't paste a link, a local Notice ID is minted
+for you. Everything is processed on your machine; the daily request budget is
+**never touched**.
+
+**Auto-fill from a SAM.gov link (Proposals tab).** Open **"🔗 Load from SAM.gov
+link (no API call)"** and paste a full opportunity URL
+(`https://sam.gov/workspace/contract/opp/<ID>/view`). DragonPulse reads SAM.gov's
+**public page data** — the same endpoints your browser uses, **not** the
+rate-limited `api.sam.gov` key — and auto-fills:
+
+- **Title**, **Agency / Office**, **Notice ID**, **Solicitation #**
+- **Notice type**, **NAICS**, **set-aside**, **response deadline**
+- **Place of performance**, **points of contact**
+- **Scope / description** (indexed automatically so you can draft right away)
+- **Attachment list**
+
+It then registers and selects the opportunity — **zero of your SAM.gov API
+requests are used**. Add the SOW PDF for fuller grounding if you have it. Invalid
+links and parsing problems are reported clearly, with the PDF-upload path as a
+fallback.
+
+**Link-only path (Discover tab):** open the manual-load expander to paste a
+**SAM.gov link** or **Notice ID** (plus optional metadata) to register the record,
+then add the solicitation in the Proposal Generator.
+
+A manually loaded opportunity behaves like any other for **drafting proposals**,
+the **Compliance Matrix**, and **saving drafts**. You can always add or replace the
+solicitation later via the Proposal Generator's **"➕ Add solicitation"** step,
+which accepts either **pasted SOW / Section L/M text** or **uploaded file(s)**
+(PDF, DOCX, TXT, MD).
 
 ---
 
@@ -288,14 +413,52 @@ either the solicitation or one of your own documents — nothing is invented.
    same embedding backend as the Knowledge Base.
 2. A section‑specific query retrieves the most relevant **solicitation** passages
    **and** the most relevant **company** chunks from your RAG Knowledge Base.
-3. Both contexts (each labeled for citation) plus the opportunity metadata are
-   handed to your local LLM, which is instructed to use only that context and cite
-   it. With no LLM, you still get a **grounded evidence scaffold** (real excerpts,
-   nothing fabricated).
+3. The same query also pulls a few **writing‑style exemplars** from the document
+   *categories* that best fit the section — e.g. **Technical** for the Technical
+   Approach, **Past Performance** for past‑performance — so each section is modeled
+   on how *your* company actually writes that kind of content.
+4. All contexts (each labeled for citation) plus the opportunity metadata are
+   handed to your local LLM with a **style‑matching system prompt**: write *as your
+   company* (inferring its real name from your documents), mirror the tone,
+   structure, headings, bullet style, and vocabulary of the exemplars, and *adapt
+   and rephrase* your own content rather than emitting generic corporate
+   boilerplate. With no LLM, you still get a **grounded evidence scaffold** (real
+   excerpts, nothing fabricated).
 
 **Sections generated:** Executive Summary · Technical Approach · Management &
 Staffing Plan · Relevant Past Performance · Differentiators · (optional)
 high‑level Pricing Strategy notes.
+
+### The Knowledge Base is *learning material*, not a fact dump
+
+The generator treats your Knowledge Base primarily as **training material for your
+company's voice, style, capabilities, and proposal structure** — it learns from
+your documents and then writes a *new* section tailored to the current
+opportunity. It does **not** force unrelated content into drafts:
+
+- **Style vs. facts are separated.** Each section gets a few **writing‑style
+  references** (drawn from the most relevant categories — Technical and Past
+  Performance are prioritized) that the model studies for *tone, structure,
+  headings, and phrasing only* — explicitly instructed **not** to copy their
+  specific projects/numbers unless they directly apply.
+- **Relevance‑gated facts.** Company knowledge‑base passages are offered as
+  **optional reference, used only when directly relevant** to the solicitation.
+  Low‑relevance chunks are dropped, and the volume injected is kept small so the
+  model isn't tempted to pad the draft with off‑topic details.
+- **Original where needed.** When nothing in the KB is clearly relevant for a
+  section, the model writes from solicitation requirements and industry best
+  practices — still in your company's voice — instead of inserting unrelated
+  material.
+- **No fabrication, proper citations.** Solicitation facts come from the
+  solicitation; company‑specific facts (named contracts, customers, dollar
+  amounts, certifications) come from the KB and are never invented. Specific KB or
+  solicitation content is cited with a bracketed source label.
+- **Sounds like you.** The model writes in the first person as your company (name
+  inferred from your KB), reusing your characteristic phrasing and terminology and
+  avoiding generic boilerplate.
+- **Transparent.** Each section's caption shows how many **style reference(s)** it
+  used, and the **📚 Sources / citations** popover lists style references
+  separately from the factual KB sources actually used.
 
 **How to use it:**
 
@@ -326,12 +489,15 @@ or **delete** old drafts. Nothing leaves the machine.
 **For full AI prose**, enable a local model in `.env` (everything stays local):
 
 ```bash
-ollama pull qwen2.5:14b          # high quality (or llama3.2:3b for speed)
+ollama pull llama3.3:70b-instruct-q3_K_M   # recommended (qwen2.5:14b / llama3.2:3b are lighter & faster)
 # in .env:
 DRAGONPULSE_LLM_ENABLED=true
 DRAGONPULSE_LLM_BASE_URL=http://localhost:11434/v1
-DRAGONPULSE_LLM_MODEL=qwen2.5:14b
+DRAGONPULSE_LLM_MODEL=llama3.3:70b-instruct-q3_K_M
 ```
+
+> The 70B model gives the best drafting quality but is **slower per section**;
+> switch `DRAGONPULSE_LLM_MODEL` to `qwen2.5:14b` for faster (lighter) drafting.
 
 Without an LLM the tab still works and produces a grounded, cited scaffold.
 
@@ -405,7 +571,7 @@ strengthening, and the past‑performance transferable‑experience logic.
 | `DRAGONPULSE_SAM_API_KEY_BASIC` | – | Basic 10/day key |
 | `DRAGONPULSE_SAM_API_KEY_SYSTEM` | – | Higher‑tier key (added later) |
 | `DRAGONPULSE_API_KEY_TIER` | `basic` | `basic` or `system` |
-| `DRAGONPULSE_DEFAULT_NAICS` | – | Comma‑separated NAICS pre‑selected in sidebar |
+| `DRAGONPULSE_DEFAULT_NAICS` | – | Comma‑separated default NAICS (sidebar NAICS controls are currently hidden; discovery uses hardcoded 237130 & 541330) |
 | `DRAGONPULSE_CACHE_TTL_SECONDS` | `43200` | Cache freshness window (12h) |
 | `DRAGONPULSE_CACHE_DISABLED` | `false` | Bypass cache entirely |
 | `DRAGONPULSE_DAILY_REQUEST_BUDGET` | `9` | Daily live‑request guardrail |
@@ -413,12 +579,20 @@ strengthening, and the past‑performance transferable‑experience logic.
 | `DRAGONPULSE_LLM_ENABLED` | `false` | Master switch for the LLM |
 | `DRAGONPULSE_LLM_BASE_URL` | – | OpenAI‑compatible base URL (local OK) |
 | `DRAGONPULSE_LLM_API_KEY` | – | LLM credential |
-| `DRAGONPULSE_LLM_MODEL` | `gpt-4o-mini` | Model name |
+| `DRAGONPULSE_LLM_MODEL` | `llama3.3:70b-instruct-q3_K_M` | Model name (recommended local primary; slower) |
 | `DRAGONPULSE_RAG_EMBEDDING_BACKEND` | `auto` | `auto`/`hashing`/`ollama`/`sentence_transformers` |
 | `DRAGONPULSE_RAG_EMBEDDING_MODEL` | `nomic-embed-text` | Model for ollama/ST backends |
-| `DRAGONPULSE_RAG_CHUNK_CHARS` | `1200` | Target characters per chunk |
-| `DRAGONPULSE_RAG_CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `DRAGONPULSE_RAG_CHUNK_CHARS` | `3600` | Target characters per chunk (~900 tokens) |
+| `DRAGONPULSE_RAG_CHUNK_OVERLAP` | `400` | Overlap between chunks |
 | `DRAGONPULSE_RAG_TOP_K` | `5` | Default retrieved chunks |
+| `DRAGONPULSE_KB_SUMMARIZE` | `true` | Generate a short per-document summary at ingestion |
+| `DRAGONPULSE_KB_MAX_UPLOAD_MB` | `1000` | Max Knowledge Base upload size per file (MB) |
+| `DRAGONPULSE_KB_OCR_ENABLED` | `true` | Auto-OCR scanned/image-only PDFs on upload |
+| `DRAGONPULSE_KB_OCR_DPI` | `200` | Render DPI for OCR (higher = slower, more accurate) |
+
+> **Note:** Streamlit's server upload cap is set in `.streamlit/config.toml`
+> (`maxUploadSize = 1000`). Keep it in sync with `DRAGONPULSE_KB_MAX_UPLOAD_MB`
+> and restart the app after changing either value.
 
 ---
 
@@ -436,6 +610,11 @@ strengthening, and the past‑performance transferable‑experience logic.
    DOCX export, plus per‑requirement **"strengthen this section"**. **Done.**
 5. ✅ **Workflow polish** — auto‑loaded solicitation attachments, knowledge‑base
    categories/bulk management, and **saved drafts with version history**. **Done.**
+6. ✅ **Priority Picks** — the **primary**, Knowledge Base‑driven opportunity
+   recommender: auto‑derives keywords from your documents, searches SAM.gov
+   (cache‑first/budget‑aware), and ranks the **top 5** best‑fit opportunities with
+   a grounded "why this matches." Runs automatically and **refreshes every 24h**.
+   **Done.**
 
 ### Possible future enhancements
 

@@ -14,6 +14,7 @@ from dragonpulse.cache.request_budget import RequestBudgetExceeded
 from dragonpulse.config.logging_config import get_logger
 from dragonpulse.models.filters import OpportunityFilters
 from dragonpulse.ui import state
+from dragonpulse.ui.manual_load import render_manual_loader
 
 logger = get_logger(__name__)
 
@@ -43,6 +44,12 @@ def run_search(filters: OpportunityFilters, force_refresh: bool = False) -> None
 def render_search(filters: OpportunityFilters) -> None:
     """Render the search controls and results table."""
     st.subheader("Discover opportunities")
+    st.caption(
+        "Browse SAM.gov by date range across your NAICS codes "
+        f"({', '.join(filters.naics_codes) or 'any'}). For Knowledge Base-driven "
+        "recommendations, use **⭐ Priority Picks** — it's the primary way to "
+        "discover work."
+    )
 
     col1, col2, col3 = st.columns([1, 1, 3])
     if col1.button("🔍 Search", type="primary", width="stretch"):
@@ -54,9 +61,19 @@ def render_search(filters: OpportunityFilters) -> None:
     with st.expander("Active filters (translated to SAM params)", expanded=False):
         st.json(filters.to_query_params())
 
+    manual = render_manual_loader(key_prefix="discover")
+    if manual is not None:
+        st.info(
+            "Opportunity selected. Open the **📄 Detail** tab to review it, or the "
+            "**📝 Proposals** tab to start a draft — both work with zero API calls."
+        )
+
     result = state.get_result()
     if result is None:
-        st.info("Set filters in the sidebar and click **Search** to begin.")
+        st.info(
+            "Set the date range in the sidebar and click **Search** to browse — or "
+            "head to **⭐ Priority Picks** for recommendations from your Knowledge Base."
+        )
         return
 
     source = "📁 cache" if result.from_cache else "🌐 live API"

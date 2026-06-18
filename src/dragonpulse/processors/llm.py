@@ -92,6 +92,7 @@ class LLMClient:
         sources: List[str],
         max_tokens: int = 700,
         json_mode: bool = False,
+        system_prompt: Optional[str] = None,
     ) -> LLMResult:
         """Run a grounded completion.
 
@@ -106,6 +107,10 @@ class LLMClient:
         json_mode:
             When True, request a JSON object response (``response_format``).
             Works with OpenAI and local OpenAI-compatible servers (Ollama).
+        system_prompt:
+            Override the default grounding system prompt (e.g. to add
+            style-matching guidance for proposal drafting). Any override should
+            still preserve the grounding/citation contract.
         """
         client = self._ensure_client()
         user_message = (
@@ -119,7 +124,7 @@ class LLMClient:
             "temperature": self.settings.llm_temperature,
             "max_tokens": max_tokens,
             "messages": [
-                {"role": "system", "content": _GROUNDING_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt or _GROUNDING_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
             ],
         }

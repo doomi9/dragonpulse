@@ -8,32 +8,22 @@ import streamlit as st
 
 from dragonpulse.cache.disk_cache import DiskCache
 from dragonpulse.config.settings import get_settings
-from dragonpulse.models.common import SET_ASIDE_CHOICES, NoticeType
-from dragonpulse.models.filters import OpportunityFilters
+from dragonpulse.models.filters import (
+    DEFAULT_NOTICE_TYPE_CODES,
+    PRIMARY_NAICS,
+    OpportunityFilters,
+)
 from dragonpulse.ui import theme
-
-# Common NAICS codes shown in the multiselect. The firm's primary codes are
-# listed first; additional codes can be configured via DRAGONPULSE_DEFAULT_NAICS
-# or typed into the "Additional NAICS" box.
-COMMON_NAICS = [
-    "237130 — Power & Communication Line / Related Structures Construction",
-    "541330 — Engineering Services",
-    "541511 — Custom Computer Programming Services",
-    "541512 — Computer Systems Design Services",
-    "541519 — Other Computer Related Services",
-    "541611 — Admin & General Management Consulting",
-    "541618 — Other Management Consulting Services",
-    "561210 — Facilities Support Services",
-    "611430 — Professional & Management Training",
-]
-
-
-def _naics_code(label: str) -> str:
-    return label.split("—")[0].strip()
 
 
 def render_sidebar() -> OpportunityFilters:
-    """Render the sidebar and return the assembled :class:`OpportunityFilters`."""
+    """Render the sidebar and return the assembled :class:`OpportunityFilters`.
+
+    Filters are intentionally minimal right now: only **Date range** and **Max
+    results** are shown. NAICS codes are hardcoded (237130, 541330) and a
+    sensible notice-type default is applied under the hood, so discovery is
+    driven by the Knowledge Base (⭐ Priority Picks) rather than manual keywords.
+    """
     settings = get_settings()
 
     theme.render_sidebar_logo()
@@ -42,60 +32,9 @@ def render_sidebar() -> OpportunityFilters:
     _render_status(settings)
 
     st.sidebar.header("Search filters")
-
-    keyword = st.sidebar.text_input(
-        "Keyword (title search)",
-        value="",
-        placeholder="e.g. cybersecurity, staffing, logistics",
-        help="Matches against the opportunity title (SAM 'title' param).",
-    )
-
-    # Merge any configured default NAICS codes into the option list + selection.
-    default_codes = settings.default_naics
-    options = list(COMMON_NAICS)
-    known_codes = {_naics_code(lbl) for lbl in options}
-    for code in default_codes:
-        if code not in known_codes:
-            options.append(code)  # show bare code if not in the friendly list
-    default_selection = [
-        lbl for lbl in options if _naics_code(lbl) in default_codes
-    ]
-
-    naics_labels = st.sidebar.multiselect(
-        "NAICS codes",
-        options=options,
-        default=default_selection,
-        help="Pre-filled from DRAGONPULSE_DEFAULT_NAICS; edit freely.",
-    )
-    naics_extra = st.sidebar.text_input(
-        "Additional NAICS (comma-separated)",
-        value="",
-        placeholder="541512, 541330",
-    )
-
-    set_aside_labels = st.sidebar.multiselect(
-        "Set-asides",
-        options=list(SET_ASIDE_CHOICES.keys()),
-        format_func=lambda c: f"{c} — {SET_ASIDE_CHOICES[c]}",
-        default=[],
-    )
-
-    notice_labels = st.sidebar.multiselect(
-        "Notice types",
-        options=[nt for nt in NoticeType],
-        format_func=lambda nt: nt.label,
-        default=[
-            NoticeType.SOLICITATION,
-            NoticeType.COMBINED_SYNOPSIS_SOLICITATION,
-            NoticeType.SOURCES_SOUGHT,
-        ],
-    )
-
-    department = st.sidebar.text_input(
-        "Department / agency name",
-        value="",
-        placeholder="e.g. GENERAL SERVICES ADMINISTRATION",
-        help="Optional exact department name (SAM 'deptname' param).",
+    st.sidebar.caption(
+        f"NAICS locked to **{', '.join(PRIMARY_NAICS)}** for now. Discovery is driven "
+        "by your Knowledge Base — see **⭐ Priority Picks**."
     )
 
     st.sidebar.subheader("Date range (posted)")
@@ -113,16 +52,12 @@ def render_sidebar() -> OpportunityFilters:
         help="Keep small on the basic 10/day key to conserve requests.",
     )
 
-    # Assemble NAICS codes from both inputs.
-    naics_codes = [_naics_code(lbl) for lbl in naics_labels]
-    naics_codes += [c.strip() for c in naics_extra.split(",") if c.strip()]
-
     filters = OpportunityFilters(
-        keyword=keyword or None,
-        naics_codes=naics_codes,
-        set_aside_codes=set_aside_labels,
-        notice_type_codes=[nt.value for nt in notice_labels],
-        department_name=department or None,
+        keyword=None,
+        naics_codes=list(PRIMARY_NAICS),
+        set_aside_codes=[],
+        notice_type_codes=list(DEFAULT_NOTICE_TYPE_CODES),
+        department_name=None,
         posted_from=posted_from,
         posted_to=posted_to,
         limit=limit,

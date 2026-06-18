@@ -26,6 +26,7 @@ from dragonpulse.ui import (  # noqa: E402
     detail_view,
     knowledge_view,
     pricing_view,
+    priority_picks_view,
     proposal_view,
     search_view,
     theme,
@@ -57,10 +58,26 @@ def main() -> None:
             icon="🔑",
         )
 
-    tab_discover, tab_detail, tab_pricing, tab_rag, tab_proposal = st.tabs(
-        ["🔍 Discover", "📄 Detail", "💰 Pricing", "📚 Knowledge Base", "📝 Proposals"]
+    (
+        tab_picks,
+        tab_discover,
+        tab_detail,
+        tab_pricing,
+        tab_rag,
+        tab_proposal,
+    ) = st.tabs(
+        [
+            "⭐ Priority Picks",
+            "🔍 Discover",
+            "📄 Detail",
+            "💰 Pricing",
+            "📚 Knowledge Base",
+            "📝 Proposals",
+        ]
     )
 
+    with tab_picks:
+        priority_picks_view.render_priority_picks(filters)
     with tab_discover:
         search_view.render_search(filters)
     with tab_detail:

@@ -26,7 +26,7 @@ class CitationEvidence(BaseModel):
     """A single grounded source used by a section."""
 
     label: str          # e.g. "Solicitation: SOW.pdf #2" or "KB: Capabilities #1"
-    origin: str         # "solicitation" | "knowledge_base"
+    origin: str         # "solicitation" | "knowledge_base" | "style_exemplar"
     snippet: str        # short excerpt for transparency
     score: Optional[float] = None
 
@@ -50,16 +50,18 @@ class ProposalSection(BaseModel):
 
     @property
     def kb_sources(self) -> List[CitationEvidence]:
-        return [s for s in self.sources if s.origin == "knowledge_base"]
+        return [
+            s for s in self.sources
+            if s.origin in ("knowledge_base", "style_exemplar")
+        ]
+
+    @property
+    def style_sources(self) -> List[CitationEvidence]:
+        """Knowledge-base chunks used as writing-style exemplars."""
+        return [s for s in self.sources if s.origin == "style_exemplar"]
 
     def to_markdown(self) -> str:
-        lines = [f"## {self.title}", "", self.content.strip(), ""]
-        if self.sources:
-            lines.append("**Sources:**")
-            for s in self.sources:
-                lines.append(f"- [{s.label}]")
-            lines.append("")
-        return "\n".join(lines)
+        return f"## {self.title}\n\n{self.content.strip()}\n"
 
 
 class ComplianceItem(BaseModel):
@@ -177,6 +179,14 @@ class ProposalDraft(BaseModel):
         ]
         body = "\n".join(s.to_markdown() for s in self.sections)
         out = "\n".join(header) + body
+        sourced = [(s.title, s.sources) for s in self.sections if s.sources]
+        if sourced:
+            out += "\n\n---\n\n## Document Sources and References\n\n"
+            for title, sources in sourced:
+                out += f"### {title}\n\n"
+                for src in sources:
+                    out += f"- {src.label}\n"
+                out += "\n"
         if self.compliance and self.compliance.items:
             out += "\n\n---\n\n" + self.compliance.to_markdown()
         return out

@@ -8,12 +8,50 @@ notice type.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dragonpulse.models.common import Address, PointOfContact, ResourceLink, _Tolerant
+
+# Matches the notice ID segment of a SAM.gov opportunity URL, e.g.
+# https://sam.gov/opp/<noticeId>/view  or  .../opp/<noticeId>
+_SAM_OPP_RE = re.compile(r"/opp/([A-Za-z0-9]+)")
+
+
+def parse_opportunity_reference(raw: str) -> Tuple[str, Optional[str]]:
+    """Parse a pasted SAM.gov link or bare Notice ID into ``(notice_id, ui_link)``.
+
+    No network is used. Accepts a full ``sam.gov/opp/<id>/view`` URL (returns the
+    id and the original link) or a bare alphanumeric Notice ID (no link).
+
+    Raises
+    ------
+    ValueError
+        If nothing usable can be parsed.
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("Enter a SAM.gov link or Notice ID.")
+
+    if "sam.gov" in text.lower() or text.lower().startswith("http"):
+        match = _SAM_OPP_RE.search(text)
+        if not match:
+            raise ValueError(
+                "Couldn't find a Notice ID in that link. Expected something like "
+                "https://sam.gov/opp/<NOTICE_ID>/view"
+            )
+        return match.group(1), text
+
+    # Bare Notice ID: SAM IDs are alphanumeric with no spaces or slashes.
+    if any(ch.isspace() for ch in text) or "/" in text:
+        raise ValueError(
+            "That doesn't look like a Notice ID or a SAM.gov link. Paste the full "
+            "opportunity URL or just the Notice ID."
+        )
+    return text, None
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
@@ -128,6 +166,39 @@ class Opportunity(BaseModel):
     additional_info_link: Optional[str] = Field(default=None, alias="additionalInfoLink")
 
     award: Optional[AwardSummary] = None
+
+    # True when the user created this record locally (pasted link/ID, uploaded a
+    # PDF, or scraped the public SAM.gov page) instead of fetching it from the
+    # rate-limited API — used to show "no API call" messaging.
+    manual_entry: bool = False
+    # How a manual record was loaded: "manual" (typed/uploaded) or "sam_link"
+    # (parsed from the public SAM.gov page). None for normal API results.
+    loaded_via: Optional[str] = None
+
+    # ------------------------------------------------------------------ #
+    # Constructors
+    # ------------------------------------------------------------------ #
+    @classmethod
+    def manual(
+        cls,
+        notice_id: str,
+        *,
+        title: Optional[str] = None,
+        ui_link: Optional[str] = None,
+        solicitation_number: Optional[str] = None,
+        naics_code: Optional[str] = None,
+        agency: Optional[str] = None,
+    ) -> "Opportunity":
+        """Build a minimal opportunity from user-provided data (no API call)."""
+        return cls(
+            notice_id=notice_id,
+            title=title or f"Manually loaded opportunity · {notice_id}",
+            ui_link=ui_link,
+            solicitation_number=solicitation_number,
+            naics_code=naics_code,
+            full_parent_path_name=agency,
+            manual_entry=True,
+        )
 
     # ------------------------------------------------------------------ #
     # Validators / normalizers

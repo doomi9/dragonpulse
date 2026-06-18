@@ -6,6 +6,8 @@ gatherUsageStats = false
 
 [server]
 headless = true
+# Knowledge Base uploads (PDF, DOCX, TXT, MD). Default Streamlit cap is 200 MB.
+maxUploadSize = 1000
 
 # HeroUI-inspired dark theme tuned to the blue/black Dragon Infrastructure logo.
 [theme]

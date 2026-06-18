@@ -27,6 +27,20 @@ DEFAULT_CATEGORIES = [
     "Other",
 ]
 
+# Coarse document *types* inferred at ingestion (distinct from the user-assigned
+# category). Used as retrieval metadata and to enrich each chunk's embedding.
+DOCUMENT_TYPES = [
+    "Proposal",
+    "Past Performance",
+    "Capability Statement",
+    "Technical Document",
+    "Statement of Work",
+    "Resume",
+    "Pricing",
+    "Certification",
+    "Other",
+]
+
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -41,6 +55,8 @@ class Document(BaseModel):
     name: str
     source_type: str = "upload"  # upload | attachment | manual
     category: str = "Uncategorized"  # folder-like grouping (user-assignable)
+    doc_type: str = "Other"  # inferred kind of document (see DOCUMENT_TYPES)
+    summary: str = ""  # short (1-2 sentence) gist; LLM-generated when available
     content_sha: Optional[str] = None
     char_count: int = 0
     chunk_count: int = 0
@@ -63,10 +79,18 @@ class Chunk(BaseModel):
     doc_name: str
     ordinal: int  # position of this chunk within its document (0-based)
     text: str
+    # Retrieval metadata carried on each chunk so it can be used for filtering
+    # and to build a context-enriched embedding (without polluting the cited text).
+    category: str = ""
+    doc_type: str = ""
+    section: Optional[str] = None  # nearest heading this chunk falls under
 
     def citation(self) -> str:
         """Human-readable source label, e.g. ``"Past Proposal.pdf #3"``."""
-        return f"{self.doc_name} #{self.ordinal + 1}"
+        base = f"{self.doc_name} #{self.ordinal + 1}"
+        if self.section:
+            return f"{base} · {self.section}"
+        return base
 
 
 class RetrievedChunk(BaseModel):

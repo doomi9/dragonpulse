@@ -23,7 +23,11 @@ from dragonpulse.processors.proposal import (
     compliance_matrix_to_xlsx_bytes,
     draft_to_docx_bytes,
 )
+from dragonpulse.processors.text_extract import UnsupportedDocument, extract_text_with_ocr
 from dragonpulse.ui import state
+from dragonpulse.ui.manual_load import render_manual_loader, render_sam_link_loader
+
+_SOL_UPLOAD_TYPES = ["pdf", "docx", "txt", "md"]
 
 logger = get_logger(__name__)
 
@@ -89,13 +93,24 @@ def _render_llm_status(kb) -> None:
 # --------------------------------------------------------------------------- #
 def _select_opportunity() -> Optional[Opportunity]:
     st.markdown("**1. Choose an opportunity**")
-    opportunities = state.get_opportunities()
+
+    opportunities = state.all_opportunities()
     selected = state.get_selected()
+
+    # Lead with the low-friction no-API paths. Open them by default when there's
+    # nothing loaded yet: paste a SAM.gov link, or drop the solicitation PDF.
+    render_sam_link_loader(key_prefix="proposal", expanded=not opportunities)
+    render_manual_loader(
+        key_prefix="proposal", allow_upload=True, expanded=not opportunities
+    )
 
     if not opportunities:
         st.info(
-            "No opportunities loaded. Run a search in the **Discover** tab first, "
-            "then return here (or open one in the **Detail** tab)."
+            "No opportunities loaded yet. Fastest no-API starts: **🔗 Load from "
+            "SAM.gov link** (auto-fills everything from the public page) or **📌 "
+            "Manually load** (drop the solicitation PDF). You can also run a search "
+            "in **Discover**, pick one from **⭐ Priority Picks**, or open one in "
+            "**Detail**."
         )
         return None
 
@@ -111,10 +126,25 @@ def _select_opportunity() -> Optional[Opportunity]:
     notice_id = options[chosen_label]
     opp = next((o for o in opportunities if o.notice_id == notice_id), None)
     if opp:
-        st.caption(
-            f"**{opp.title}** · {opp.agency or '—'} · NAICS {opp.naics_code or '—'} · "
-            f"{len(opp.resource_links)} attachment(s)"
-        )
+        if opp.loaded_via == "sam_link":
+            deadline = opp.response_deadline
+            st.caption(
+                f"🔗 **{opp.title}** · loaded from SAM.gov link (no API call) · "
+                f"{opp.agency or '—'} · NAICS {opp.naics_code or '—'} · "
+                f"deadline {deadline.strftime('%Y-%m-%d') if deadline else '—'} · "
+                f"{len(opp.resource_links)} attachment(s) · "
+                f"[open on SAM.gov ↗]({opp.sam_url})"
+            )
+        elif opp.manual_entry:
+            st.caption(
+                f"📌 **{opp.title}** · manually loaded (no API data) · "
+                f"NAICS {opp.naics_code or '—'} · [open on SAM.gov ↗]({opp.sam_url})"
+            )
+        else:
+            st.caption(
+                f"**{opp.title}** · {opp.agency or '—'} · NAICS {opp.naics_code or '—'} · "
+                f"{len(opp.resource_links)} attachment(s)"
+            )
     return opp
 
 
@@ -136,8 +166,17 @@ def _ensure_generator(opp: Opportunity, kb) -> ProposalGenerator:
 def _render_solicitation_loader(opp: Opportunity, gen: ProposalGenerator) -> None:
     st.markdown("**2. Solicitation**")
 
-    # Auto-load the attachments the first time this opportunity is selected.
+    # Auto-load attachments (API opps) or the uploaded solicitation (manual opps)
+    # the first time this opportunity is selected.
     _auto_load_solicitation(opp, gen)
+
+    already_loaded = bool(st.session_state.get(state.KEY_PROPOSAL_ATTACH))
+    if opp.manual_entry and not already_loaded:
+        st.info(
+            "📌 Manually loaded opportunity — **no API calls**. Add the solicitation "
+            "by pasting the SOW text or uploading the solicitation PDF(s) below.",
+            icon="📌",
+        )
 
     loaded = st.session_state.get(state.KEY_PROPOSAL_ATTACH, [])
     msg = st.session_state.get(state.KEY_PROPOSAL_LOAD_MSG)
@@ -163,7 +202,8 @@ def _render_solicitation_loader(opp: Opportunity, gen: ProposalGenerator) -> Non
         _load_attachments(opp, gen, reset=True)
         st.rerun()
 
-    with st.expander("➕ Add or paste solicitation text manually", expanded=not loaded):
+    with st.expander("➕ Add solicitation — paste text or upload PDF(s)", expanded=not loaded):
+        st.markdown("**Paste solicitation / SOW text**")
         pasted = st.text_area(
             "Paste solicitation / SOW text",
             height=140,
@@ -182,6 +222,19 @@ def _render_solicitation_loader(opp: Opportunity, gen: ProposalGenerator) -> Non
             else:
                 st.warning("Nothing to add — paste some text first.")
 
+        st.divider()
+        st.markdown("**Or upload the solicitation file(s)** (PDF, DOCX, TXT, MD)")
+        st.caption("Processed locally — no SAM.gov API calls. Scanned PDFs are OCR'd.")
+        files = st.file_uploader(
+            "Upload solicitation file(s)",
+            type=_SOL_UPLOAD_TYPES,
+            accept_multiple_files=True,
+            key=f"sol_upload_{opp.notice_id}",
+            label_visibility="collapsed",
+        )
+        if st.button("Add uploaded file(s) to solicitation", width="stretch"):
+            _add_uploaded_solicitation(files, gen)
+
 
 def _auto_load_solicitation(opp: Opportunity, gen: ProposalGenerator) -> None:
     """Download + extract the opportunity's attachments once, automatically."""
@@ -189,6 +242,21 @@ def _auto_load_solicitation(opp: Opportunity, gen: ProposalGenerator) -> None:
     if opp.notice_id in attempted:
         return
     attempted.add(opp.notice_id)
+    if opp.manual_entry:
+        # If the user uploaded the solicitation when loading manually, index it
+        # now so they land ready to generate — no extra clicks, no API calls.
+        stash = st.session_state.get(state.KEY_MANUAL_SOLICITATION, {}).get(opp.notice_id)
+        if stash:
+            n = gen.load_solicitation(stash)
+            names = [name for name, _ in stash]
+            st.session_state[state.KEY_PROPOSAL_ATTACH] = names + [f"{n} chunks indexed"]
+            st.session_state[state.KEY_PROPOSAL_LOAD_MSG] = (
+                "success",
+                f"✅ Indexed {len(stash)} uploaded solicitation file(s) into {n} "
+                "chunks — zero API calls. Ready to generate below.",
+            )
+        # Otherwise the manual-entry banner explains how to add the solicitation.
+        return
     if not opp.resource_links:
         st.session_state[state.KEY_PROPOSAL_LOAD_MSG] = (
             "info",
@@ -234,6 +302,56 @@ def _load_attachments(opp: Opportunity, gen: ProposalGenerator, *, reset: bool =
     if skipped:
         detail += f" Skipped {len(skipped)}: " + "; ".join(skipped[:3])
     st.session_state[state.KEY_PROPOSAL_LOAD_MSG] = ("success", detail)
+
+
+def _add_uploaded_solicitation(files, gen: ProposalGenerator) -> None:
+    """Extract uploaded solicitation file(s) locally and index them (no API call)."""
+    if not files:
+        st.warning("Choose one or more files first.")
+        return
+    settings = gen.settings
+    extracted: List[Tuple[str, str]] = []
+    names: List[str] = []
+    errors: List[str] = []
+    progress = st.progress(0.0, text="Starting…")
+    for idx, f in enumerate(files, start=1):
+        base = (idx - 1) / len(files)
+        progress.progress(base, text=f"Reading {f.name}…")
+        try:
+            def _on_page(done, total, _f=f, _base=base):
+                progress.progress(
+                    _base + (done / total) / len(files),
+                    text=f"OCR {_f.name}: page {done}/{total}…",
+                )
+
+            text = extract_text_with_ocr(
+                f.getvalue(),
+                f.name,
+                ocr_enabled=settings.kb_ocr_enabled,
+                dpi=settings.kb_ocr_dpi,
+                page_callback=_on_page,
+            )
+            extracted.append((f.name, text))
+            names.append(f.name)
+        except UnsupportedDocument as exc:
+            errors.append(f"{f.name}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Solicitation upload failed for %s", f.name)
+            errors.append(f"{f.name}: unexpected error: {exc}")
+    progress.progress(1.0, text="Done.")
+    progress.empty()
+
+    for err in errors:
+        st.error(err)
+    if not extracted:
+        return
+    n = gen.load_solicitation(extracted)
+    current = st.session_state.get(state.KEY_PROPOSAL_ATTACH, [])
+    current.extend(names)
+    current.append(f"{n} chunks indexed")
+    st.session_state[state.KEY_PROPOSAL_ATTACH] = current
+    st.success(f"Indexed {len(extracted)} uploaded file(s) into {n} chunks (no API call).")
+    st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -327,12 +445,20 @@ def _render_draft() -> None:
     )
 
     for section in draft.sections:
-        with st.expander(f"📄 {section.title}", expanded=section.section_id == "executive_summary"):
+        with st.expander(
+            f"📄 {section.title}",
+            expanded=section.section_id in ("title_page", "tab_1_executive_summary"),
+        ):
             tag = "🧠 AI prose" if section.used_llm else "🔤 grounded scaffold"
-            st.caption(
+            kb_facts = [s for s in section.kb_sources if s.origin == "knowledge_base"]
+            style_refs = section.style_sources
+            caption = (
                 f"{tag} · {len(section.solicitation_sources)} solicitation + "
-                f"{len(section.kb_sources)} KB source(s)"
+                f"{len(kb_facts)} KB source(s)"
             )
+            if style_refs:
+                caption += f" · ✍️ {len(style_refs)} style reference(s)"
+            st.caption(caption)
             st.markdown(section.content)
 
             with st.popover("📚 Sources / citations", use_container_width=True):
@@ -340,9 +466,13 @@ def _render_draft() -> None:
                     st.markdown("**From the solicitation:**")
                     for s in section.solicitation_sources:
                         st.caption(f"[{s.label}] {s.snippet}")
-                if section.kb_sources:
+                if kb_facts:
                     st.markdown("**From your knowledge base:**")
-                    for s in section.kb_sources:
+                    for s in kb_facts:
+                        st.caption(f"[{s.label}] {s.snippet}")
+                if style_refs:
+                    st.markdown("**Writing-style references (matched for tone & structure):**")
+                    for s in style_refs:
                         st.caption(f"[{s.label}] {s.snippet}")
                 if not section.sources:
                     st.caption("No grounding sources retrieved for this section.")
